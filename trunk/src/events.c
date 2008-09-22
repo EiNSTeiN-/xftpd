@@ -202,11 +202,7 @@ static int event_signal_lua_callback(struct collection *c, struct event_callback
 		if(stacktop != lua_gettop(L)) {
 			EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 		}
-		lua_setgcthreshold(L, 0);
-		/*if(lua_getgccount(L) > gc_count) {
-			EVENTS_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-				cb->function, lua_getgccount(L));
-		}*/
+		//luainit_garbagecollect();
 		return 1;
 	}
 
@@ -242,11 +238,7 @@ static int event_signal_lua_callback(struct collection *c, struct event_callback
 			if(stacktop != lua_gettop(L)) {
 				EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				EVENTS_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					cb->function, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 1;
 		}
 
@@ -258,11 +250,7 @@ static int event_signal_lua_callback(struct collection *c, struct event_callback
 			if(stacktop != lua_gettop(L)) {
 				EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				EVENTS_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					cb->function, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 0;
 		}
 	}
@@ -271,11 +259,7 @@ static int event_signal_lua_callback(struct collection *c, struct event_callback
 	if(stacktop != lua_gettop(L)) {
 		EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 	}
-	lua_setgcthreshold(L, 0);
-	/*if(lua_getgccount(L) > gc_count) {
-		EVENTS_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-			cb->function, lua_getgccount(L));
-	}*/
+	//luainit_garbagecollect();
 
 	return 1;
 }

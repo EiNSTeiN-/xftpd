@@ -813,6 +813,24 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 	} else {									// handle any raw commands
 		numeric = atoi(s[1]);
 		if(numeric) switch(numeric) {
+		case 1: {
+			
+			/*
+				TODO: check if this message is really thrown at each connection
+			*/
+			
+			struct event_parameter params[1];
+			
+			/* raise the event */
+			params[0].ptr = server;
+			params[0].type = "irc_server";
+			
+			IRC_DBG("onIrcConnect");
+			
+			event_raise("onIrcConnect", 1, &params[0]);
+			
+			break;
+		}
 		case 432: //erroneous nickname: illegal characters
 			//we don't want an assigned nickname if it's erroneous
 			IRC_DBG("The server rejected \"%s\" as a nickname.", server->nickname);
@@ -983,16 +1001,15 @@ static unsigned int send_from_channels(struct irc_server *server) {
 int irccore_server_write(int fd, struct irc_server *server) {
 
 	if(!server->connected) {
-		struct event_parameter params[1];
 		unsigned int i;
-
+		
 		IRC_DBG("Now connected to %s:%u.", server->address, server->port);
-
+		
 		/* now we can send/receive something */
-
+		
 		i = 1;
 		setsockopt(server->s, SOL_SOCKET, SO_KEEPALIVE, (char *)&i, sizeof(BOOL));
-
+		
 		/* enqueue the USER line */
 		irc_raw(server,
 			"NICK %s\n",
@@ -1004,16 +1021,7 @@ int irccore_server_write(int fd, struct irc_server *server) {
 			server->address,
 			server->realname
 		);
-
 		
-		/* raise the event */
-		params[0].ptr = server;
-		params[0].type = "irc_server";
-
-		IRC_DBG("onIrcConnect");
-
-		event_raise("onIrcConnect", 1, &params[0]);
-
 		server->connected = 1;
 		return 1;
 	}
@@ -1290,8 +1298,8 @@ int irccore_init() {
 	irccore_server.timestamp = 0;
 
 	if(!irccore_load_config()) {
-		IRC_DBG("Could not load irc config");
-		return 0;
+		IRC_DBG("THE IRC CONFIG COULD NOT BE LOADED, NO SITEBOT AVAILABLE.");
+		return 1;
 	}
 
 #ifdef MASTER_WITH_IRC_CLIENT

@@ -96,11 +96,7 @@ static int slaveselection_signal_lua_callback(struct collection *c, struct event
 		if(stacktop != lua_gettop(L)) {
 			SLAVESELECTION_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 		}
-		lua_setgcthreshold(L, 0);
-		/*if(lua_getgccount(L) > gc_count) {
-			SLAVESELECTION_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-				cb->function, lua_getgccount(L));
-		}*/
+		//luainit_garbagecollect();
 		return 1;
 	}
 
@@ -135,11 +131,7 @@ static int slaveselection_signal_lua_callback(struct collection *c, struct event
 			if(stacktop != lua_gettop(L)) {
 				SLAVESELECTION_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				SLAVESELECTION_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					cb->function, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 1;
 		}
 
@@ -150,11 +142,7 @@ static int slaveselection_signal_lua_callback(struct collection *c, struct event
 			if(stacktop != lua_gettop(L)) {
 				SLAVESELECTION_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				SLAVESELECTION_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					cb->function, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 1;
 		}
 
@@ -166,11 +154,7 @@ static int slaveselection_signal_lua_callback(struct collection *c, struct event
 				SLAVESELECTION_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
 			ctx->object->ret.ptr = ctx;
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				SLAVESELECTION_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					cb->function, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 0;
 		}
 	}
@@ -179,11 +163,7 @@ static int slaveselection_signal_lua_callback(struct collection *c, struct event
 	if(stacktop != lua_gettop(L)) {
 		SLAVESELECTION_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 	}
-	lua_setgcthreshold(L, 0);
-	/*if(lua_getgccount(L) > gc_count) {
-		SLAVESELECTION_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-			cb->function, lua_getgccount(L));
-	}*/
+	//luainit_garbagecollect();
 
 	return 1;
 }

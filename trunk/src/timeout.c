@@ -167,11 +167,7 @@ static unsigned int timeout_call_callback(struct collection *c, struct timeout_c
 			if(stacktop != lua_gettop(L)) {
 				TIMEOUT_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				TIMEOUT_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					to->function, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 1;
 		}
 
@@ -201,11 +197,7 @@ static unsigned int timeout_call_callback(struct collection *c, struct timeout_c
 				if(stacktop != lua_gettop(L)) {
 					TIMEOUT_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 				}
-				lua_setgcthreshold(L, 0);
-				/*if(lua_getgccount(L) > gc_count) {
-					TIMEOUT_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-						to->function, lua_getgccount(L));
-				}*/
+				//luainit_garbagecollect();
 				return 1;
 			}
 
@@ -216,11 +208,7 @@ static unsigned int timeout_call_callback(struct collection *c, struct timeout_c
 				if(stacktop != lua_gettop(L)) {
 					TIMEOUT_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 				}
-				lua_setgcthreshold(L, 0);
-				/*if(lua_getgccount(L) > gc_count) {
-					TIMEOUT_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-						to->function, lua_getgccount(L));
-				}*/
+				//luainit_garbagecollect();
 				return 1;
 			}
 		}
@@ -230,11 +218,7 @@ static unsigned int timeout_call_callback(struct collection *c, struct timeout_c
 		}
 	}
 
-	lua_setgcthreshold(L, 0);
-	/*if(lua_getgccount(L) > gc_count) {
-		TIMEOUT_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-			to->function, lua_getgccount(L));
-	}*/
+	//luainit_garbagecollect();
 
 	return 1;
 }

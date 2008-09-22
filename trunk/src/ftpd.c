@@ -3325,6 +3325,7 @@ int ftpd_connect(int fd, void *param) {
 	struct ftpd_client_ctx *client = NULL;
 	int client_fd;
 
+/*
 	FTPD_DBG("Stats [%I64u / %I64u:%u / %u / %u:%u] - Last Cycle [%I64u]",
 		ftpd_connections,
 		socket_current,
@@ -3334,7 +3335,7 @@ int ftpd_connect(int fd, void *param) {
 		lua_getgcthreshold(L),
 		main_cycle_time
 	);
-
+*/
 	/* connect to the client */
 	client_fd = accept(fd, NULL, 0);
 	if(client_fd == -1) {

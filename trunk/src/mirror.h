@@ -59,7 +59,7 @@ typedef void* mirror_param;
 
 struct mirror_lua_ctx {
 	char *func_name;
-	void *param;
+	unsigned int param;
 } __attribute__((packed));
 
 typedef struct mirror_side mirror_side;
@@ -120,7 +120,7 @@ struct mirror_ctx *mirror_lua_new(
 	struct slave_connection *dest_cnx,
 	struct vfs_element *dest_file,
 	char *func_name,
-	void *param
+	unsigned int param
 );
 
 #endif /* __MIRROR_H */

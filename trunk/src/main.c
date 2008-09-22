@@ -203,19 +203,21 @@ int main(int argc, char* argv[]) {
 		time = time_now();
 		
 		probe_stats();
-
+		
 		timeout_poll();
-
+		
 		socket_poll();
-
+		
 		slaves_dump_fileslog();
 		
 		config_poll();
 		
 		collection_cleanup_iterators();
-
+		
+		luainit_garbagecollect();
+		
 		Sleep(MASTER_SLEEP_TIME);
-
+		
 		if(obj_balance) {
 			MAIN_DBG("WARNING!!! Object dereferencing is not balanced!");
 		}
@@ -228,13 +230,13 @@ int main(int argc, char* argv[]) {
 				MAIN_DBG("Could not reload \"ftpd\" module");
 				return 0;
 			}
-
+			
 			/* clean all irc hooks */
 			if(!irccore_reload()) {
 				MAIN_DBG("Could not reload \"irccore\" module");
 				return 0;
 			}
-
+			
 			/* clean all site hooks */
 			if(!site_reload()) {
 				MAIN_DBG("Could not reload \"site\" module");
@@ -243,15 +245,21 @@ int main(int argc, char* argv[]) {
 			
 			/* clean all timeouts */
 			timeout_clear();
-
+			
 			/* clean all events */
 			events_clear();
-
+			
+			/* make a brand new lua context. */
+			if(!luainit_reload()) {
+				MAIN_DBG("Could not reload \"lua\" module");
+				return 0;
+			}
+			
 			/* reload all scripts */
 			scripts_loadall();
-
+			
 			nuke_reload();
-
+			
 			MAIN_DBG("Calling the reload event ...");
 			/* fire the onReload event */
 			event_onReload();
@@ -261,11 +269,11 @@ int main(int argc, char* argv[]) {
 		}
 		
 		main_cycle_time = timer(time);
-
+		
 	} while(main_ctx.living);
-
+	
 	MAIN_DBG("Main loop exited. Runtime: %I64u miliseconds", timer(startup_time));
-
+	
 	scripts_free();
 	irccore_free();
 	luainit_free();
@@ -282,7 +290,7 @@ int main(int argc, char* argv[]) {
 	slaves_free();
 	crypto_free();
 	socket_free();
-
+	
 	return 0;
 }
 
