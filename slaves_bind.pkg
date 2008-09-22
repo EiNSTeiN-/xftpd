@@ -1,0 +1,101 @@
+/*
+ * Copyright (c) 2007, The xFTPd Project.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *
+ *     * Neither the name of the xFTPd Project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ *     * Redistributions of this project or parts of this project in any form
+ *       must retain the following aknowledgment:
+ *       "This product includes software developed by the xFTPd Project.
+ *        http://www.xftpd.com/ - http://www.xftpd.org/"
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE xFTPd PROJECT ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE xFTPd PROJECT BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+$#include "slaves.h"
+
+
+/* structure used to keep track of connected peers */
+typedef struct {
+
+	slave_ctx *slave;			/* NULL for not-ready slaves */
+
+	unsigned long long int timestamp; /* time at wich the slave connected */
+	unsigned long long int statstime @ xferprobe; /* last time the stats have been asked */
+
+	/* utility information */
+	unsigned long long int diskfree;
+	unsigned long long int disktotal;
+
+	unsigned long long int lagtime @ lag;
+
+	_collection *available_files @ files; /* collection of struct vfs_element : files available from that slave */
+	_collection *xfers; /* collection of struct _ftpd_client_context : currently xfering clients */
+} slave_connection;
+
+/* slave's hello data */
+typedef struct {
+	unsigned long long int diskfree; /* this is the total of all mapped disks */
+	unsigned long long int disktotal;
+	const char name[1];
+} hello_data;
+
+typedef struct {
+	config_file *config;
+	char *name; /* name of the slave */
+	unsigned long long int lastonline;
+
+	slave_connection *cnx; /* NULL if the slave is not connected */
+	_collection *sections; /* collection of vfs_section added to this slave */
+} slave_ctx;
+
+module slaves {
+	extern _collection *slaves @ all;
+
+	/* calculate the size used by the files of slave */
+	unsigned long long int slave_files_size @ using(slave_connection *cnx);
+
+	/* return the formated ip address associated with a slave connection */
+	const char *slave_address @ address(slave_connection *cnx);
+
+	/* iterate a slave *connection* */
+	slave_connection *collection_next @ iterate_cnx(_collection *c, unsigned int *iterator);
+
+	/* iterate a slave descriptor */
+	slave_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
+
+	/* utility apis */
+	slave_ctx *slave_new @ add(const char *name);
+	slave_ctx *slave_get @ get(const char *name);
+
+	unsigned int slave_dump @ save(slave_ctx *slave);
+	unsigned int slave_del @ delete(slave_ctx *slave);
+
+	void slave_connection_destroy @ kick(slave_connection *cnx);
+	
+	unsigned int slave_usage_from @ usage_from(slave_connection *cnx, vfs_element *element);
+}
+
+
+
