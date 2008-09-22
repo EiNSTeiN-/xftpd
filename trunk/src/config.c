@@ -372,17 +372,31 @@ int config_raw_write_int(const char *filename, const char *param, unsigned long 
 	return 1;
 }
 
+static void config_obj_destroy(struct config_file *config) {
+	
+	collectible_destroy(config);
+
+	collection_destroy(config->fields);
+	if(config->filename) {
+		free(config->filename);
+	}
+	free(config);
+	
+	return;
+}
+
+
 /* Initialize the config structure without loading the file */
 struct config_file *config_new(const char *filename, unsigned long long int timeout) {
 	struct config_file *config;
 	
-	if(!filename) {
+	/*if(!filename) {
 		CONFIG_DBG("Params error");
 		return 0;
-	}
+	}*/
 
 	if(!open_configs) {
-		open_configs = collection_new();
+		open_configs = collection_new(C_CASCADE);
 	}
 
 	config = malloc(sizeof(struct config_file));
@@ -390,12 +404,19 @@ struct config_file *config_new(const char *filename, unsigned long long int time
 		CONFIG_DBG("Memory error");
 		return NULL;
 	}
-
-	config->filename = strdup(filename);
-	if(!config->filename) {
-		CONFIG_DBG("Memory error");
-		free(config);
-		return NULL;
+	
+	obj_init(&config->o, config, (obj_f)config_obj_destroy);
+	collectible_init(config);
+	
+	if(filename) {
+		config->filename = strdup(filename);
+		if(!config->filename) {
+			CONFIG_DBG("Memory error");
+			free(config);
+			return NULL;
+		}
+	} else {
+		config->filename = NULL;
 	}
 
 	config->timeout = timeout;
@@ -404,10 +425,12 @@ struct config_file *config_new(const char *filename, unsigned long long int time
 	config->modified = 0;
 	config->loaded = 0;
 
-	config->fields = collection_new();
+	config->fields = collection_new(C_CASCADE);
 
 	if(!collection_add(open_configs, config)) {
-		free(config->filename);
+		if(config->filename) {
+			free(config->filename);
+		}
 		collection_destroy(config->fields);
 		free(config);
 		return NULL;
@@ -424,11 +447,7 @@ void config_destroy(struct config_file *config) {
 		return;
 	}
 
-	collection_delete(open_configs, config);
-
-	collection_destroy(config->fields);
-	free(config->filename);
-	free(config);
+	obj_destroy(&config->o);
 
 	return;
 }
@@ -455,6 +474,26 @@ static struct config_field *config_get_field(struct config_file *config, const c
 	return collection_match(config->fields, (collection_f)config_get_field_matcher, &ctx);
 }
 
+static void config_field_destroy(struct config_field *field) {
+	
+	obj_destroy(&field->o);
+	
+	return;
+}
+
+static void config_field_obj_destroy(struct config_field *field) {
+	
+	collectible_destroy(field);
+	
+	free(field->name);
+	field->name = NULL;
+	
+	free(field->value);
+	field->value = NULL;
+	
+	return;
+}
+
 static struct config_field *config_new_field(struct config_file *config, const char *name, unsigned int namesum, const char *value) {
 	struct config_field *field;
 
@@ -463,10 +502,13 @@ static struct config_field *config_new_field(struct config_file *config, const c
 		CONFIG_DBG("Memory error");
 		return NULL;
 	}
+	
+	obj_init(&field->o, field, (obj_f)config_field_obj_destroy);
+	collectible_init(field);
 
 	field->modified = 0;
 	field->namesum = namesum;
-
+	
 	field->name = strdup(name);
 	if(!field->name) {
 		CONFIG_DBG("Memory error");
@@ -531,6 +573,11 @@ int config_load(struct config_file *config) {
 		return 0;
 	}
 
+	if(!config->filename) {
+		/* not backed up on disk - can't load */
+		return 1;
+	}
+
 	if(config->loaded) {
 		CONFIG_DBG("Already loaded");
 		return 0;
@@ -561,11 +608,11 @@ int config_load(struct config_file *config) {
 		equal = strchr(buffer, '=');
 		if(!equal) continue;
 		ptr = equal;
-		while(*(ptr-1) == ' ') ptr--;
+		while(*(ptr-1) == ' ' && ((ptr-1) >= buffer)) ptr--;
 		*ptr = 0;
 		
 		ptr = equal+1;
-		while(*ptr == ' ') ptr++;
+		while(*ptr == ' ' && *ptr) ptr++;
 
 		// buffer is the name
 		// ptr is the value
@@ -584,7 +631,11 @@ int config_load(struct config_file *config) {
 static int config_save_modified(struct collection *c, struct config_field *field, struct config_file *config) {
 
 	if(field->modified) {
-		config_raw_write(config->filename, field->name, field->value);
+		if(field->value) {
+			config_raw_write(config->filename, field->name, field->value);
+		} else {
+			config_field_destroy(field);
+		}
 		field->modified = 0;
 	}
 
@@ -596,6 +647,11 @@ int config_save(struct config_file *config) {
 
 	if(!config) {
 		CONFIG_DBG("Params error");
+		return 0;
+	}
+
+	if(!config->filename) {
+		/* not backed up on disk - can't save */
 		return 0;
 	}
 	
@@ -618,7 +674,7 @@ int config_save(struct config_file *config) {
 
 static int config_poll_save_modified(struct collection *c, struct config_file *config, void *param) {
 
-	if(config->loaded && config->modified && (timer(config->savetime) > config->timeout)) {
+	if(config->filename && config->loaded && config->modified && (timer(config->savetime) > config->timeout)) {
 		config_save(config);
 	}
 
@@ -660,7 +716,7 @@ char *config_read(struct config_file *config, const char *param, const char *def
 		return NULL;
 	}
 	
-	if(!config->loaded) {
+	if(!config->loaded && config->filename) {
 		config_load(config);
 	}
 
@@ -672,7 +728,7 @@ char *config_read(struct config_file *config, const char *param, const char *def
 	}
 
 	/* field->value may be NULL if the field was to be deleted ... */
-	return field->value ? strdup(field->value) : strdup(default_value);
+	return field->value ? strdup(field->value) : (default_value ? strdup(default_value) : NULL);
 }
 
 char *config_lua_read(struct config_file *config, const char *param, const char *default_value) {
@@ -696,7 +752,7 @@ unsigned long long int config_read_int(struct config_file *config, char *param, 
 		return 0;
 	}
 	
-	if(!config->loaded) {
+	if(!config->loaded && config->filename) {
 		config_load(config);
 	}
 
@@ -721,7 +777,7 @@ int config_write(struct config_file *config, const char *param, const char *new_
 		return 0;
 	}
 	
-	if(!config->loaded) {
+	if(!config->loaded && config->filename) {
 		config_load(config);
 	}
 
@@ -773,7 +829,7 @@ int config_write_int(struct config_file *config, const char *param, unsigned lon
 		return 0;
 	}
 	
-	if(!config->loaded) {
+	if(!config->loaded && config->filename) {
 		config_load(config);
 	}
 

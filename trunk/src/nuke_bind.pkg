@@ -36,6 +36,7 @@
 $#include "nuke.h"
 
 typedef struct {
+	collectible c @ collectible;
 
 	/* parent nuke structure */
 	nuke_ctx *nuke;
@@ -52,6 +53,7 @@ typedef struct {
 } nuke_nukee;
 
 typedef struct {
+	collectible c @ collectible;
 
 	/*
 		nuked element, null if it has been deleted
@@ -88,5 +90,5 @@ module nukes {
 	nuke_ctx *nuke_add @ add(vfs_element *element, unsigned int multiplier, char *nuker, char *reason);
 	void nuke_del @ del(nuke_ctx *nuke);
 	
-	nuke_ctx *nuke_check(vfs_element *element);
+	nuke_ctx *nuke_check @ check(vfs_element *element);
 }

@@ -144,9 +144,43 @@ static ftpd_command ftpd_client_text_to_command(char *buffer, unsigned int len) 
 	return CMD_UNKNOWN;
 }
 
+void ftpd_line_obj_destroy(struct ftpd_collectible_line *l) {
+	
+	collectible_destroy(l);
+	free(l);
+	
+	return;
+}
+
+void ftpd_line_destroy(struct ftpd_collectible_line *l) {
+	
+	obj_destroy(&l->o);
+	return;
+}
+
+struct ftpd_collectible_line *ftpd_line_new(char *line) {
+	struct ftpd_collectible_line *l;
+	unsigned int len;
+	
+	len = strlen(line);
+	l = malloc(sizeof(struct ftpd_collectible_line) + len+1);
+	if(!l) {
+		FTPD_DBG("Memory error");
+		return NULL;
+	}
+	
+	obj_init(&l->o, l, (obj_f)ftpd_line_obj_destroy);
+	collectible_init(l);
+	
+	memcpy(&l->line[0], line, len+1);
+	
+	return l;
+}
+
 /* add a message for the client from lua */
 unsigned int ftpd_lua_message(struct ftpd_client_ctx *client, const char *msg) {
 	char *tmp, *line;
+	struct ftpd_collectible_line *l;
 	char *ptr;
 
 	if(!client || !msg) return 0;
@@ -166,13 +200,14 @@ unsigned int ftpd_lua_message(struct ftpd_client_ctx *client, const char *msg) {
 			ptr++;
 		}
 
-		line = strdup(line);
-		if(!collection_add(client->messages, line)) {
-			FTPD_DBG("Collection error");
-			free(line);
-			line = NULL;
+		l = ftpd_line_new(line);
+		if(l) {
+			if(!collection_add(client->messages, l)) {
+				FTPD_DBG("Collection error");
+			} else {
+				collection_movelast(client->messages, l);
+			}
 		}
-		collection_movelast(client->messages, line);
 		
 		line = ptr;
 	} while(line && strlen(line));
@@ -184,8 +219,8 @@ unsigned int ftpd_lua_message(struct ftpd_client_ctx *client, const char *msg) {
 
 /* add a formatted message for the client */
 unsigned int ftpd_message(struct ftpd_client_ctx *client, char *format, ...) {
-	char *line;
-	char *ptr;
+//	char *line;
+//	char *ptr;
 	int result;
 	char *str=NULL;
 	va_list args;
@@ -200,25 +235,7 @@ unsigned int ftpd_message(struct ftpd_client_ctx *client, char *format, ...) {
 	}
 	va_end(args);
 
-	/* add line by line */
-	line = str;
-	do {
-		ptr = strchr(line, '\n');
-		if(ptr) {
-			*ptr = 0;
-			ptr++;
-		}
-
-		line = strdup(line);
-		if(!collection_add(client->messages, line)) {
-			FTPD_DBG("Collection error");
-			free(line);
-			line = NULL;
-		}
-		collection_movelast(client->messages, line);
-		
-		line = ptr;
-	} while(line && strlen(line));
+	ftpd_lua_message(client, str);
 
 	free(str);
 
@@ -229,6 +246,7 @@ unsigned int ftpd_message(struct ftpd_client_ctx *client, char *format, ...) {
 static unsigned int ftpd_client_text_enqueue(struct collection *c, char *format, ...) {
 	int result;
 	char *str = NULL;
+	struct ftpd_collectible_line *l;
 
 	va_list args;
 	va_start(args, format);
@@ -238,13 +256,17 @@ static unsigned int ftpd_client_text_enqueue(struct collection *c, char *format,
 		return 0;
 	}
 	va_end(args);
-
-	if(!collection_add(c, str)) {
-		FTPD_DBG("Collection error");
-		free(str);
-		return 0;
+	
+	l = ftpd_line_new(str);
+	if(l) {
+		if(!collection_add(c, l)) {
+			FTPD_DBG("Collection error");
+		} else {
+			collection_movelast(c, l);
+		}
 	}
-	collection_movelast(c, str);
+	
+	free(str);
 
 	return 1;
 }
@@ -490,7 +512,7 @@ static unsigned int ftpd_client_make_directory_listing(struct collection *c, str
 
 /* insert an element in the directory listing that is nonexistant in the vfs
 	just so the user can see it without being there */
-unsigned int ftpd_inject_listing(struct ftpd_client_ctx *client, unsigned int type, const char *name, const char *owner) {
+unsigned int ftpd_inject_listing(struct ftpd_client_ctx *client, char type, const char *name, const char *owner) {
 	unsigned short month, day, hour, minute;
 	char date[32];
 	char ctype;
@@ -759,11 +781,7 @@ void ftpd_client_cleanup_data_connection(struct ftpd_client_ctx *client) {
 
 	/* cleanup data */
 	if(client->data_ctx.data) {
-		while(collection_size(client->data_ctx.data)) {
-			void *first = collection_first(client->data_ctx.data);
-			free(first);
-			collection_delete(client->data_ctx.data, first);
-		}
+		collection_empty(client->data_ctx.data);
 	}
 
 	/* common variables */
@@ -1029,9 +1047,9 @@ struct slave_transfer_request *ftpd_transfer(
 	struct vfs_element *file,
 	unsigned int ip,
 	unsigned short port,
-	unsigned int passive,
-	unsigned int upload,
-	unsigned int restart,
+	char passive,
+	char upload,
+	unsigned long long int restart,
 	unsigned int *length
 ) {
 	struct slave_transfer_request *data;
@@ -1130,13 +1148,13 @@ unsigned int ftpd_wipe(struct vfs_element *element) {
 
 	obj_ref(&element->o);
 	
-	VFS_DBG("Wiping element(%08x) %s\\%s", (int)element, element->parent->name, element->name);
+	//VFS_DBG("Wiping element(%08x) %s\\%s", (int)element, element->parent ? element->parent->name : "", element->name);
 	
 	if(element->type == VFS_FOLDER) {
 
 		/* this is a folder, delete its childs */
 		collection_iterate(element->childs, (collection_f)ftpd_wipe_child, NULL);
-	} else {
+	} else if(element->type == VFS_FILE) {
 		/* to delete a file, we will remove it from our vfs and we
 			will tell the slaves to delete it aswell. if any slave cannot
 			delete it, the file will just reappear the next time the
@@ -1210,7 +1228,7 @@ unsigned int ftpd_wipe_from(struct vfs_element *element, struct slave_ctx *slave
 		if(!collection_size(element->childs)) {
 			vfs_recursive_delete(element);
 		}
-	} else {
+	} else if(element->type == VFS_FILE) {
 		struct {
 			struct vfs_element *element;
 			struct slave_ctx *slave;
@@ -1240,23 +1258,22 @@ struct xfer_ctx *ftpd_lua_client_to_xfer(struct ftpd_client_ctx *client) {
 	return &client->xfer;
 }
 
-static unsigned int build_data_for_client(struct collection *c, char *line, void *param) {
+static unsigned int build_data_for_client(struct collection *c, struct ftpd_collectible_line *l, void *param) {
 	struct {
 		char *buffer;
 		struct ftpd_client_ctx *client;
 	} *ctx = param;
 
-	sprintf(&((ctx->buffer)[strlen(ctx->buffer)]), "%s", line);
+	sprintf(&((ctx->buffer)[strlen(ctx->buffer)]), "%s", l->line);
 
-	free(line);
-	collection_delete(ctx->client->data_ctx.data, line);
+	ftpd_line_destroy(l);
 
 	return 1;
 }
 
-int get_data_length(struct collection *c, char *line, unsigned int *length) {
+int get_data_length(struct collection *c, struct ftpd_collectible_line *l, unsigned int *length) {
 
-	*length += strlen(line)+1;
+	*length += strlen(l->line)+1;
 
 	return 1;
 }
@@ -1321,6 +1338,8 @@ int ftpd_client_data_error(int fd, struct ftpd_client_ctx *client) {
 
 	ftpd_client_text_enqueue(client->messages, "425 Can't open data connection (socket error).");
 	ftpd_client_cleanup_data_connection(client);
+	
+	FTPD_DBG("Data connection was cleaned up.");
 
 	return 1;
 }
@@ -2755,6 +2774,8 @@ const char *client_address(struct ftpd_client_ctx *client) {
 }
 
 static void ftpd_client_obj_destroy(struct ftpd_client_ctx *client) {
+	
+	collectible_destroy(client);
 
 	/* free the data context */
 	ftpd_client_cleanup_data_connection(client);
@@ -2764,20 +2785,25 @@ static void ftpd_client_obj_destroy(struct ftpd_client_ctx *client) {
 		event_onClientDisconnect(client);
 	}
 
-	if(client->user) {
-		collection_delete(client->user->clients, client);
-		client->user = NULL;
+	if(client->volatile_config) {
+		config_destroy(client->volatile_config);
+		client->volatile_config = NULL;
 	}
+
+	/*if(client->user) {
+		collection_delete(client->user->clients, client);*/
+		client->user = NULL;
+	//}
 
 	/* free the message collection,
 		this is freed after the data context because some callback
 		functions may still need to add messages */
 	if(client->messages) {
-		while(collection_size(client->messages)) {
+		/*while(collection_size(client->messages)) {
 			void *first = collection_first(client->messages);
 			free(first);
 			collection_delete(client->messages, first);
-		}
+		}*/
 		collection_destroy(client->messages);
 		client->messages = NULL;
 	}
@@ -2812,7 +2838,7 @@ static void ftpd_client_obj_destroy(struct ftpd_client_ctx *client) {
 	client->iobuf = NULL;
 
 	/* delete the collection entry */
-	collection_delete(clients, client);
+	//collection_delete(clients, client);
 
 	/* free the client context */
 	free(client);
@@ -2944,16 +2970,16 @@ int ftpd_client_read(int fd, struct ftpd_client_ctx *client) {
 }
 
 /* try to get the reply code from any message in the collection */
-static unsigned int get_replycode_callback(struct collection *c, char *line, unsigned int *replycode) {
+static unsigned int get_replycode_callback(struct collection *c, struct ftpd_collectible_line *l, unsigned int *replycode) {
 	unsigned int n;
 	char s[4];
 
 	*replycode = 0;
 
-	if((line[3] != '-') && (line[3] != ' '))
+	if((l->line[3] != '-') && (l->line[3] != ' '))
 		return 1;
 
-	snprintf(s, 3, line);
+	snprintf(s, 3, l->line);
 	s[3] = 0;
 
 	n = atoi(s);
@@ -2966,8 +2992,7 @@ static unsigned int get_replycode_callback(struct collection *c, char *line, uns
 }
 
 /* build the reply buffer */
-static unsigned int build_buffer_callback(struct collection *c, void *item, void *param) {
-	char *line = item;
+static unsigned int build_buffer_callback(struct collection *c, struct ftpd_collectible_line *l, void *param) {
 	char *ptr;
 	struct {
 		unsigned int count;
@@ -2976,6 +3001,7 @@ static unsigned int build_buffer_callback(struct collection *c, void *item, void
 		char *buffer;
 	} *ctx = param;
 	char s[4];
+	char *line = l->line;
 
 	ctx->current++;
 
@@ -3057,8 +3083,9 @@ static unsigned int build_buffer_callback(struct collection *c, void *item, void
 		line = ptr;
 	}
 
-	free(item);
-	collection_delete(c, item);
+	//free(item);
+	//collection_delete(c, item);
+	ftpd_line_destroy(l);
 
 	return 1;
 }
@@ -3103,7 +3130,7 @@ static int ftpd_client_process_output(struct ftpd_client_ctx *client) {
 	}
 
 	/* build a big buffer with all replies */
-	collection_iterate(client->messages, build_buffer_callback, &ctx);
+	collection_iterate(client->messages, (collection_f)build_buffer_callback, &ctx);
 	if(!ctx.buffer) {
 		FTPD_DBG("Could not build a message buffer");
 		return 0;
@@ -3204,11 +3231,8 @@ struct ftpd_client_ctx *ftpd_client_new(int fd) {
 	}
 
 	/* setup the i/o buffer */
-	//client->locked = 0;
-	//client->deleted = 0;
-	//client->destroyed = 0;
 	obj_init(&client->o, client, (obj_f)ftpd_client_obj_destroy);
-	obj_debug(&client->o, 1);
+	collectible_init(client);
 
 	client->buffersize = FTPD_BUFFER_SIZE;
 	client->iobuf = malloc(client->buffersize);
@@ -3220,14 +3244,22 @@ struct ftpd_client_ctx *ftpd_client_new(int fd) {
 	memset(client->iobuf, 0, client->buffersize);
 	client->filledsize = 0;
 
+	client->volatile_config = config_new(NULL, 0);
+	if(!client->volatile_config) {
+		free(client->iobuf);
+		FTPD_DBG("Memory error");
+		free(client);
+		return NULL;
+	}
+
 	/* setup the message collection */
-	client->messages = collection_new();
-	client->group = collection_new();
+	client->messages = collection_new(C_CASCADE);
+	client->group = collection_new(C_CASCADE);
 
 	/* setup the default values for the data context */
 	client->data_ctx.fd = -1;
-	client->data_ctx.data = collection_new();
-	client->data_ctx.group = collection_new();
+	client->data_ctx.data = collection_new(C_CASCADE);
+	client->data_ctx.group = collection_new(C_CASCADE);
 
 	/* setup the working directory */
 	client->working_directory = vfs_root;
@@ -3408,8 +3440,8 @@ int ftpd_init() {
 		return 0;
 	}
 
-	clients = collection_new();
-	ftpd_group = collection_new();
+	clients = collection_new(C_CASCADE);
+	ftpd_group = collection_new(C_CASCADE);
 
 	/* create our main socket */
 	ftpd_fd = create_listening_socket(ftpd_client_port);
@@ -3453,12 +3485,12 @@ void ftpd_free() {
 
 	/* we have to do it in two times */
 	if(clients) {
-		collection_void(clients);
+		/*collection_void(clients);
 		while(collection_size(clients)) {
 			void *first = collection_first(clients);
 			ftpd_client_destroy(first);
 			collection_delete(clients, first);
-		}
+		}*/
 		collection_destroy(clients);
 		clients = NULL;
 	}

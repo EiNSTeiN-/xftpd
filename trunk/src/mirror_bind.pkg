@@ -49,8 +49,12 @@ typedef struct {
 } mirror_side;
 
 typedef struct {
+	collectible c @ collectible;
+	
 	unsigned long long int uid; /* unique id shared with both slaves */
 	unsigned long long int timestamp; /* transfer start */
+	
+	config_file *volatile_config;
 
 	mirror_side source;
 	mirror_side target;

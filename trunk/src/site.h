@@ -60,6 +60,7 @@ void site_free();
 int site_reload();
 
 unsigned int site_handle(struct ftpd_client_ctx *client, char *line);
+unsigned int site_tree_add(struct collection *branches, char *trigger, char *handler);
 
 #endif /* __SITE_H */
 

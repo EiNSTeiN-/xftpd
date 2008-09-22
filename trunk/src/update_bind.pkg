@@ -33,34 +33,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "users.h"
+$#include "update.h"
 
-
-typedef struct {
-	collectible c @ collectible;
-
-	config_file *config;
-
-	char *username;
-	char *usergroup;
-
-	unsigned int disabled; /* 1 if the user is disabled */
-
-	_collection *clients;
-} user_ctx;
-
-module users {
-	extern _collection *users @ all;
-
-	user_ctx *user_new @ add(char *username, char *usergroup, char *password);
-	user_ctx *user_get @ get(char *username);
-
-	unsigned int user_auth @ auth(user_ctx *user, char *password);
-	unsigned int user_disable @ disable(user_ctx *user, unsigned int disabled);
-	unsigned int user_delete @ delete(user_ctx *user);
-	
-	int user_set_group @ chgroup(user_ctx *user, char *group);
-	int user_set_password @ chpass(user_ctx *user, char *password);
-
-	//user_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
+module update {
+	int update_slave @ slave(slave_connection *ctx, char *filename);
 }

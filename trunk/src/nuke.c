@@ -45,12 +45,11 @@
 
 struct collection *nukes = NULL; /* nuke_ctx */
 
-static void nuke_destroy_nukee(struct nuke_nukee *nukee) {
-
-	if(nukee->nuke) {
-		collection_delete(nukee->nuke->nukees, nukee);
-		nukee->nuke = NULL;
-	}
+static void nukee_obj_destroy(struct nuke_nukee *nukee) {
+	
+	collectible_destroy(nukee);
+	
+	nukee->nuke = NULL;
 
 	if(nukee->name) {
 		free(nukee->name);
@@ -58,19 +57,20 @@ static void nuke_destroy_nukee(struct nuke_nukee *nukee) {
 	}
 
 	free(nukee);
+	
+	return;
+}
+
+static void nuke_destroy_nukee(struct nuke_nukee *nukee) {
+
+	obj_destroy(&nukee->o);
 
 	return;
 }
 
-static void nuke_destroy(struct nuke_ctx *nuke) {
+static void nuke_obj_destroy(struct nuke_ctx *nuke) {
 
 	if(nuke->nukees) {
-		collection_void(nuke->nukees);
-		while(collection_size(nuke->nukees)) {
-			void *first = collection_first(nuke->nukees);
-			nuke_destroy_nukee(first);
-			collection_delete(nuke->nukees, first);
-		}
 		collection_destroy(nuke->nukees);
 		nuke->nukees = NULL;
 	}
@@ -95,9 +95,15 @@ static void nuke_destroy(struct nuke_ctx *nuke) {
 		nuke->reason = NULL;
 	}
 
-	collection_delete(nukes, nuke);
-
 	free(nuke);
+	
+	return;
+}
+
+static void nuke_destroy(struct nuke_ctx *nuke) {
+
+	collection_void(nuke->nukees);
+	obj_destroy(&nuke->o);
 
 	return;
 }
@@ -109,6 +115,9 @@ static struct nuke_ctx *nuke_new(unsigned int multiplier, char *nuker, char *rea
 		NUKE_DBG("Memory error");
 		return NULL;
 	}
+	
+	obj_init(&nuke->o, nuke, (obj_f)nuke_obj_destroy);
+	collectible_init(nuke);
 	
 	nuke->timestamp = timestamp;
 	nuke->multiplier = multiplier;
@@ -130,7 +139,7 @@ static struct nuke_ctx *nuke_new(unsigned int multiplier, char *nuker, char *rea
 		return NULL;
 	}
 
-	nuke->nukees = collection_new();
+	nuke->nukees = collection_new(C_CASCADE);
 
 	if(!collection_add(nukes, nuke)) {
 		nuke_destroy(nuke);
@@ -219,6 +228,9 @@ static struct nuke_nukee *nuke_new_nukee(struct nuke_ctx *nuke, char *name, unsi
 		NUKE_DBG("Memory error");
 		return NULL;
 	}
+	
+	obj_init(&nukee->o, nukee, (obj_f)nukee_obj_destroy);
+	collectible_init(nukee);
 
 	nukee->name = strdup(name);
 	if(!nukee->name) {
@@ -525,7 +537,7 @@ int nuke_init() {
 
 	NUKE_DBG("Loading ...");
 
-	nukes = collection_new();
+	nukes = collection_new(C_CASCADE);
 
 	/* Load all nukes from file */
 	if(!nuke_load_all()) {
@@ -561,12 +573,6 @@ void nuke_free() {
 
 	/* destroy all nukes */
 	if(nukes) {
-		collection_void(nukes);
-		while(collection_size(nukes)) {
-			void *first = collection_first(nukes);
-			nuke_destroy(first);
-			collection_delete(nukes, first);
-		}
 		collection_destroy(nukes);
 		nukes = NULL;
 	}

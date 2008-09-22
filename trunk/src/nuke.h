@@ -37,6 +37,8 @@
 #define __NUKE_H
 
 #include "constants.h"
+#include "obj.h"
+#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_NUKE
@@ -57,6 +59,8 @@ extern struct collection *nukes;
 
 typedef struct nuke_nukee nuke_nukee;
 struct nuke_nukee {
+	struct obj o;
+	struct collectible c;
 
 	/* parent nuke structure */
 	struct nuke_ctx *nuke;
@@ -74,6 +78,8 @@ struct nuke_nukee {
 
 typedef struct nuke_ctx nuke_ctx;
 struct nuke_ctx {
+	struct obj o;
+	struct collectible c;
 
 	/*
 		nuked element, null if it has been deleted

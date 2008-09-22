@@ -78,8 +78,15 @@ struct vfs_element;
 typedef struct slave_connection slave_connection;
 struct slave_connection {
 	struct obj o;
+	struct collectible c;
 
-	unsigned int ready;
+	/* volatile config file, not backed up on disk */
+	struct config_file *volatile_config;
+
+	unsigned char platform; /* slave's platform */
+	unsigned long long int rev; /* slave's revision number */
+	
+	char ready;
 	struct slave_ctx *slave;			/* NULL for not-ready slaves */
 
 	/* io things should not be accessed by lua */
@@ -114,6 +121,9 @@ struct slave_connection {
 
 typedef struct slave_ctx slave_ctx;
 struct slave_ctx {
+	struct obj o;
+	struct collectible c;
+	
 	char *name; /* of the slave */
 
 	struct config_file *config;
@@ -151,8 +161,9 @@ struct slave_ctx *slave_get(const char *name);
 struct slave_ctx *slave_load(const char *filename);
 
 unsigned int slave_dump(struct slave_ctx *slave);
-unsigned int slave_del(struct slave_ctx *slave);
+unsigned int slave_delete(struct slave_ctx *slave);
 
+int slave_set_virtual_root(struct slave_ctx *slave, struct vfs_element *vroot);
 
 unsigned int slave_offline_delete(struct slave_ctx *slave, struct vfs_element *file, int log);
 unsigned int slave_mark_online_from(struct slave_connection *cnx, struct vfs_element *file);

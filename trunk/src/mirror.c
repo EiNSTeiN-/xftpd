@@ -35,7 +35,6 @@
 
 #include <windows.h>
 
-
 #include "constants.h"
 #include "collection.h"
 #include "logging.h"
@@ -51,6 +50,7 @@
 #include "luainit.h"
 #include "asynch.h"
 #include "obj.h"
+#include "config.h"
 
 
 struct collection *mirrors = NULL;
@@ -62,7 +62,7 @@ int mirror_init() {
 #else
 	MIRROR_DBG("Loading ...");
 
-	mirrors = collection_new();
+	mirrors = collection_new(C_CASCADE);
 #endif
 
 	return 1;
@@ -299,6 +299,8 @@ static unsigned int find_destination_slave(struct collection *c, void *item, voi
 }
 
 static void mirror_obj_destroy(struct mirror_ctx *mirror) {
+	
+	collectible_destroy(mirror);
 
 	MIRROR_DBG("Destroying");
 
@@ -307,6 +309,11 @@ static void mirror_obj_destroy(struct mirror_ctx *mirror) {
 		(*mirror->callback)(mirror, mirror->success, mirror->callback_param);
 		mirror->callback = NULL;
 		mirror->callback_param = NULL;
+	}
+
+	if(mirror->volatile_config) {
+		config_destroy(mirror->volatile_config);
+		mirror->volatile_config = NULL;
 	}
 
 	/* cancel both asynch event */
@@ -319,34 +326,30 @@ static void mirror_obj_destroy(struct mirror_ctx *mirror) {
 		mirror->target.cmd = NULL;
 	}
 
-	/* unlink from both file's mirror collection */
-	if(mirror->source.file) {
-		collection_delete(mirror->source.file->mirror_from, mirror);
-	}
-	if(mirror->target.file) {
-		collection_delete(mirror->target.file->mirror_to, mirror);
-	}
-
-	/* unlink from both slave's mirror collection */
-	if(mirror->source.cnx) {
-		collection_delete(mirror->source.cnx->mirror_from, mirror);
-	}
-	if(mirror->target.cnx) {
-		collection_delete(mirror->target.cnx->mirror_to, mirror);
-	}
-
 	/* TODO: send a cancel to both slaves for the xfer */
 	
-
 	/*
 		if the file is no longer available from anywhere,
 		then delete it from the vfs.
 	*/
-	if (!collection_size(mirror->target.file->mirror_to) &&
-		!collection_size(mirror->target.file->available_from) &&
-		!collection_size(mirror->target.file->offline_from)) {
-		vfs_recursive_delete(mirror->target.file);
+	if(mirror->target.file) {
+		if (!collection_size(mirror->target.file->mirror_to) &&
+			!collection_size(mirror->target.file->available_from) &&
+			!collection_size(mirror->target.file->offline_from)) {
+			/* wipe so we're sure the slave will have it deleted */
+			ftpd_wipe(mirror->target.file);
+		}
+	} else {
+		MIRROR_DBG("Deleting mirror where target file is NULL!");
 	}
+
+	/* unlink from both file's mirror collection */
+	mirror->source.file = NULL;
+	mirror->target.file = NULL;
+
+	/* unlink from both slave's mirror collection */
+	mirror->source.cnx = NULL;
+	mirror->target.cnx = NULL;
 
 	collection_delete(mirrors, mirror);
 	free(mirror);
@@ -418,7 +421,7 @@ struct mirror_ctx *mirror_new(
 
 	/* don't transfer if the destination slave is already used as a target
 		for the same destination file in any mirror operation */
-	collection_iterate(mirrors, find_destination_slave, &ctx);
+	collection_iterate(mirrors, (collection_f)find_destination_slave, &ctx);
 	if(ctx.found) {
 		MIRROR_DBG("This file is already being mirrored to that slave.");
 		return NULL;
@@ -433,7 +436,7 @@ struct mirror_ctx *mirror_new(
 	}
 
 	obj_init(&mirror->o, mirror, (obj_f)mirror_obj_destroy);
-	obj_debug(&mirror->o, 1);
+	collectible_init(mirror);
 
 	mirror->callback = callback;
 	mirror->callback_param = param;
@@ -506,6 +509,17 @@ struct mirror_ctx *mirror_new(
 		free(mirror);
 		return NULL;
 	}
+
+	mirror->volatile_config = config_new(NULL, 0);
+	if(!mirror->volatile_config) {
+		MIRROR_DBG("Memory error");
+		collection_delete(dest_cnx->mirror_to, mirror);
+		collection_delete(src_cnx->mirror_from, mirror);
+		collection_delete(dest_file->mirror_to, mirror);
+		collection_delete(src_file->mirror_from, mirror);
+		free(mirror);
+		return NULL;
+	}
 	
 	mirror->source.cmd = NULL;
 	mirror->target.cmd = NULL;
@@ -516,6 +530,7 @@ struct mirror_ctx *mirror_new(
 	*/
 	if(!mirror_make_slave_listen_query(mirror)) {
 		MIRROR_DBG("Could not make \"slave listen\" query.");
+		config_destroy(mirror->volatile_config);
 		collection_delete(mirrors, mirror);
 		collection_delete(dest_cnx->mirror_to, mirror);
 		collection_delete(src_cnx->mirror_from, mirror);

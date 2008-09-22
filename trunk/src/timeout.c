@@ -48,7 +48,7 @@ int timeout_init() {
 
 	TIMEOUT_DBG("Loading ...");
 
-	timeouts = collection_new();
+	timeouts = collection_new(C_CASCADE);
 
 	return 1;
 }
@@ -57,10 +57,19 @@ void timeout_free() {
 
 	TIMEOUT_DBG("Unloading ...");
 
-	timeout_clear();
 	collection_destroy(timeouts);
 	timeouts = NULL;
 
+	return;
+}
+
+static void timeout_obj_destroy(struct timeout_ctx *to) {
+	
+	collectible_destroy(to);
+	
+	free(to->function);
+	free(to);
+	
 	return;
 }
 
@@ -73,6 +82,9 @@ unsigned int timeout_add(char *function, unsigned long long int timeout, unsigne
 		TIMEOUT_DBG("Memory error");
 		return 0;
 	}
+	
+	obj_init(&to->o, to, (obj_f)timeout_obj_destroy);
+	collectible_init(to);
 
 	to->function = strdup(function);
 	if(!to->function) {
@@ -89,17 +101,14 @@ unsigned int timeout_add(char *function, unsigned long long int timeout, unsigne
 	return 1;
 }
 
-static unsigned int timeout_del_callback(struct collection *c, void *item, void *param) {
-	struct timeout_ctx *to = item;
+static int timeout_del_callback(struct collection *c, struct timeout_ctx *to, void *param) {
 	struct {
 		char *function;
 		unsigned int success;
 	} *ctx = param;
 
 	if(!stricmp(to->function, ctx->function)) {
-		collection_delete(timeouts, to);
-		free(to->function);
-		free(to);
+		obj_destroy(&to->o);
 	}
 
 	return 1;
@@ -112,12 +121,12 @@ unsigned int timeout_del(char *function) {
 		unsigned int success;
 	} ctx = { function, 0 };
 
-	collection_iterate(timeouts, timeout_del_callback, &ctx);
+	collection_iterate(timeouts, (collection_f)timeout_del_callback, &ctx);
 
 	return ctx.success;
 }
 
-static unsigned int timeout_clean_callback(struct collection *c, void *item, void *param) {
+/*static unsigned int timeout_clean_callback(struct collection *c, void *item, void *param) {
 	struct timeout_ctx *to = item;
 
 	collection_delete(timeouts, to);
@@ -125,18 +134,17 @@ static unsigned int timeout_clean_callback(struct collection *c, void *item, voi
 	free(to);
 
 	return 1;
-}
+}*/
 
 /* clean all timeout */
 void timeout_clear() {
 
-	collection_iterate(timeouts, timeout_clean_callback, NULL);
+	collection_empty(timeouts);
 
 	return;
 }
 
-static unsigned int timeout_call_callback(struct collection *c, void *item, void *param) {
-	struct timeout_ctx *to = item;
+static unsigned int timeout_call_callback(struct collection *c, struct timeout_ctx *to, void *param) {
 	lua_Number n;
 	unsigned int err;
 	char *errval, *errmsg;
@@ -234,7 +242,7 @@ static unsigned int timeout_call_callback(struct collection *c, void *item, void
 /* call any timeout that need so */
 unsigned int timeout_poll() {
 	
-	collection_iterate(timeouts, timeout_call_callback, NULL);
+	collection_iterate(timeouts, (collection_f)timeout_call_callback, NULL);
 	
 	/*if(lua_gcmonitor()) {
 		TIMEOUT_DBG("%u Kbytes for LUA with %u threshold.", current_gc_count, current_gc_threshold);

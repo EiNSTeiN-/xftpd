@@ -42,8 +42,26 @@ typedef struct {
 	char *args;
 } irc_message;
 
-typedef struct {
+typedef enum {
+	IRC_SOURCE_ANY,
+	IRC_SOURCE_CHANNEL,
+	IRC_SOURCE_PRIVATE,
+	IRC_SOURCE_NOTICE
+} irc_source;
 
+typedef struct {
+	collectible c @ collectible;
+
+	unsigned long long int timestamp; /* last JOIN command timestamp */
+	unsigned int joined;
+
+	char *name;
+	char *key;
+	
+} irc_channel;
+
+typedef struct {
+	
 	unsigned int connected;
 
 	_collection *channels;
@@ -60,8 +78,33 @@ typedef struct {
 
 } irc_server;
 
-module irc {
+typedef struct {
+	char *hostname;
+	char *nick;
+} irc_nick_change;
 
+typedef struct {
+	char *hostname;
+	char *channel;
+} irc_join_channel;
+
+typedef struct {
+	char *hostname;
+	char *channel;
+} irc_part_channel;
+
+typedef struct {
+	char *hostname;
+	char *victim;
+	char *channel;
+} irc_kick_user;
+
+typedef struct {
+	char *hostname;
+} irc_quit;
+
+
+module irc {
 	extern _collection *irc_hooks @ hooks;
 	extern irc_server irccore_server @ server;
 
@@ -71,5 +114,5 @@ module irc {
 	unsigned int irc_lua_say @ say(char *channel, char *message);
 	unsigned int irc_lua_broadcast @ broadcast(char *group, char *message);
 
-	unsigned int tree_add @ hook(_collection *tree, char *trigger, char *handler);
+	unsigned int irc_tree_add @ hook(_collection *tree, char *trigger, char *handler, irc_source source = IRC_SOURCE_ANY);
 }

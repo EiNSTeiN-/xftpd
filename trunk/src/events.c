@@ -78,6 +78,21 @@ struct event_ctx *event_get(const char *name) {
 	return collection_match(events, (collection_f)event_get_matcher, (void *)name);
 }
 
+static void event_obj_destroy(struct event_ctx *ctx) {
+	
+	collectible_destroy(ctx);
+	
+	free(ctx->name);
+	ctx->name = NULL;
+	
+	collection_destroy(ctx->callbacks);
+	ctx->callbacks = NULL;
+
+	free(ctx);
+	
+	return;
+}
+
 struct event_ctx *event_create(const char *name) {
 	struct event_ctx *ctx;
 
@@ -88,8 +103,11 @@ struct event_ctx *event_create(const char *name) {
 		EVENTS_DBG("Memory error");
 		return NULL;
 	}
+	
+	obj_init(&ctx->o, ctx, (obj_f)event_obj_destroy);
+	collectible_init(ctx);
 
-	ctx->callbacks = collection_new();
+	ctx->callbacks = collection_new(C_CASCADE);
 	ctx->name = strdup(name);
 	if(!ctx->name) {
 		EVENTS_DBG("Memory error");
@@ -112,6 +130,18 @@ static unsigned int event_get_callback_matcher(struct collection *c, struct even
 	return !stricmp(cb->function, function);
 }
 
+static void event_callback_obj_destroy(struct event_callback *cb) {
+	
+	collectible_destroy(cb);
+	
+	free(cb->function);
+	cb->function = NULL;
+
+	free(cb);
+	
+	return;
+}
+
 struct event_callback *event_get_callback(struct event_ctx *ctx, const char *function, int create) {
 	struct event_callback *cb;
 
@@ -119,12 +149,17 @@ struct event_callback *event_get_callback(struct event_ctx *ctx, const char *fun
 
 	cb = collection_match(ctx->callbacks, (collection_f)event_get_callback_matcher, (void *)function);
 	if(!cb && create) {
+		
+		//EVENTS_DBG("Adding %s to callbacks of %s", function, ctx->name);
 
 		cb = malloc(sizeof(struct event_callback));
 		if(!cb) {
 			EVENTS_DBG("Memory error");
 			return NULL;
 		}
+	
+		obj_init(&cb->o, cb, (obj_f)event_callback_obj_destroy);
+		collectible_init(cb);
 
 		cb->function = strdup(function);
 		if(!cb->function) {
@@ -156,7 +191,7 @@ static int event_signal_lua_callback(struct collection *c, struct event_callback
 	lua_Number n;
 
 	//unsigned int gc_count = lua_getgccount(L);
-
+	
 	lua_pushstring(L, cb->function);
 	lua_gettable(L, LUA_GLOBALSINDEX);
 
@@ -269,10 +304,10 @@ int event_signal_callback(struct event_object *object, struct event_ctx *event) 
 struct signal_callback *event_signal_add(char *name, int (*callback)(void *obj, void *param), void *param) {
 
 	if(!event_signals) {
-		event_signals = collection_new();
+		event_signals = collection_new(C_CASCADE);
 	}
 	if(!event_group) {
-		event_group = collection_new();
+		event_group = collection_new(C_CASCADE);
 	}
 
 	/* register this callback so we'll have it called on this event */
@@ -283,15 +318,16 @@ int event_register(char *name, char *function) {
 	struct event_ctx *ctx;
 
 	if(!name || !function) return 0;
+	
 
 	if(!event_signals) {
-		event_signals = collection_new();
+		event_signals = collection_new(C_CASCADE);
 	}
 	if(!event_group) {
-		event_group = collection_new();
+		event_group = collection_new(C_CASCADE);
 	}
 	if(!events) {
-		events = collection_new();
+		events = collection_new(C_CASCADE);
 	}
 
 	ctx = event_get(name);
@@ -305,7 +341,7 @@ int event_register(char *name, char *function) {
 		/* register this callback so we'll have it called on this event */
 		event_signal_add(name, (signal_f)event_signal_callback, ctx);
 	}
-
+	
 	/* add the callback to the event context */
 	event_get_callback(ctx, function, 1);
 
@@ -318,7 +354,7 @@ int event_register(char *name, char *function) {
 struct signal_ctx *event_signal_get(const char *name, int create) {
 
 	if(!event_signals) {
-		event_signals = collection_new();
+		event_signals = collection_new(C_CASCADE);
 	}
 
 	return signal_get(event_signals, name, create);
@@ -329,13 +365,13 @@ int events_init() {
 	EVENTS_DBG("Loading ...");
 
 	if(!event_signals) {
-		event_signals = collection_new();
+		event_signals = collection_new(C_CASCADE);
 	}
 	if(!event_group) {
-		event_group = collection_new();
+		event_group = collection_new(C_CASCADE);
 	}
 	if(!events) {
-		events = collection_new();
+		events = collection_new(C_CASCADE);
 	}
 
 	return 1;
@@ -347,28 +383,8 @@ int events_clear() {
 
 	signal_clear(event_group);
 	/* there should be no more signals ... */
-
-	while(collection_size(events)) {
-		struct event_ctx *ctx = collection_first(events);
-		
-		free(ctx->name);
-		ctx->name = NULL;
-
-		while(collection_size(ctx->callbacks)) {
-			struct event_callback *cb = collection_first(ctx->callbacks);
-
-			free(cb->function);
-			cb->function = NULL;
-
-			free(cb);
-			collection_delete(ctx->callbacks, cb);
-		}
-		collection_destroy(ctx->callbacks);
-		ctx->callbacks = NULL;
-
-		free(ctx);
-		collection_delete(events, ctx);
-	}
+	
+	collection_empty(events);
 
 	return 1;
 }
@@ -431,12 +447,16 @@ static unsigned int event_raise_callback(struct collection *c, void *item, void 
 
 int event_raise(char *name, unsigned int param_count, struct event_parameter *params) {
 	struct event_object o;
+	struct signal_ctx *s;
 
 	o.param_count = param_count;
 	o.params = params;
 	o.ret.success = 1;
 	
-	signal_raise(event_signal_get(name, 0), &o);
+	s = event_signal_get(name, 0);
+	if(s) {
+		signal_raise(s, &o);
+	}
 
 	return o.ret.success;
 }

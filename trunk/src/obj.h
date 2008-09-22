@@ -53,20 +53,20 @@
 #  define OBJ_DBG(format, arg...)
 #endif
 
-struct obj {
-	unsigned int ref;
-	unsigned int destroyed;
+struct obj { /* 2+1+1+1+4+4 = 13 */
+	unsigned short ref; /* more than 65535 refs ? shouldn't be. */
+	char destroyed;
 
-	int debug;
+	char debug;
 	
-	unsigned int iscalled;
+	char iscalled;
 	void (*destructor)(void *self);
 	void *self;
 } __attribute__((packed));
 
 typedef void (*obj_f)(void *self);
 
-int obj_debug(struct obj *o, int debug);
+int obj_debug(struct obj *o, char debug);
 
 extern unsigned long long int obj_balance;
 
@@ -81,6 +81,12 @@ int obj_init(struct obj *o, void *self, void (*destructor)(void *self));
 	was deleted, zero if it was marked as deleted.
 */
 int obj_destroy(struct obj *o);
+
+/*
+	Return the 'self' passed as a parameter at the
+	object's initialization.
+*/
+void *obj_self(struct obj *o);
 
 /*
 	Increase the reference count, preventing the

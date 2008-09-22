@@ -57,15 +57,15 @@ TB = (GB * 1024);
 -- APIs for the collection module
 function casted_iteration(state, ctx)
 
-	o, ctx.n = collection.iterate(state, ctx.n);
+	if not ctx.iter then return nil, nil; end
+
+	o = collection.iterate(state, ctx.iter);
 	if not o then
-		setmetatable(ctx, {__mode = "v"});
 		return nil, nil;
 	end
 
 	o = tolua.cast(o, ctx.type);
 	if not o then
-		setmetatable(ctx, {__mode = "v"});
 		return nil, nil;
 	end
 
@@ -78,8 +78,8 @@ end
 --		-- item can now be used as
 --		-- a "usertype_to_cast" object type
 --	end
-function casted(state, type)
-	return casted_iteration, state, { n = 0, type = type };
+function casted(c, type)
+	return casted_iteration, c, { iter = collection.iterator(c), type = type };
 end
 
 
@@ -120,8 +120,10 @@ end
 
 -- build a default skin table to be used
 function skintable()
-
-	return { b = "\002", c = "\003" };
+	return {
+		b = "\002",
+		c = "\003"
+	};
 end
 
 function skinned_get_object_at(_table, v)
@@ -154,9 +156,12 @@ function skinned(line, _table)
 
 	skinned_global_table = _table;
 
+	assert(line, "no line");
+	assert(xftpd_skin_config, "no config loaded");
 	contents = config.read(xftpd_skin_config, line);
 	
 	if not contents then
+		assert(line, "line fucked up");
 		return line .. " was not found in " .. OPEN_SKIN_FILE;
 	end
 	

@@ -89,6 +89,9 @@ struct proxy_data {
 } __attribute__((packed));
 
 struct proxy_connection {
+	struct obj o;
+	struct collectible c;
+	
 	struct signal_callback *rd_packet_cb;
 
 	struct packet *p;

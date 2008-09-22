@@ -61,7 +61,7 @@ int site_init() {
 
 	SITE_DBG("Loading ...");
 
-	site_hooks = collection_new();
+	site_hooks = collection_new(C_CASCADE);
 
 	return 1;
 }
@@ -71,7 +71,7 @@ int site_reload() {
 	SITE_DBG("Reloading ...");
 
 	/* remove all handlers in the tree */
-	tree_destroy(site_hooks);
+	collection_empty(site_hooks);
 
 	return 1;
 }
@@ -81,25 +81,24 @@ void site_free() {
 	SITE_DBG("Unloading ...");
 
 	/* remove all handlers in the tree */
-	tree_destroy(site_hooks);
 	collection_destroy(site_hooks);
 	site_hooks = NULL;
 
 	return;
 }
 
-static unsigned int call_site_handlers(struct collection *c, void *item, void *param) {
+static unsigned int call_site_handlers(struct collection *c, struct ftpd_collectible_line *l, void *param) {
 	struct {
 		struct ftpd_client_ctx *client;
 		char *args;
 		int error;
 	} *ctx = param;
-	char *handler = item;
 	lua_Number n;
 	unsigned int err, i;
 	char *errval;
 	char *errmsg;
 	int stacktop = lua_gettop(L);
+	char *handler = l->line;
 
 	//unsigned int gc_count = lua_getgccount(L);
 
@@ -200,6 +199,26 @@ static unsigned int call_site_handlers(struct collection *c, void *item, void *p
 	return 1;
 }
 
+int site_tree_cmp(struct ftpd_collectible_line *a, struct ftpd_collectible_line *b) {
+	
+	return stricmp(a->line, b->line);
+}
+
+unsigned int site_tree_add(struct collection *branches, char *trigger, char *handler) {
+	struct ftpd_collectible_line *l;
+	
+	l = ftpd_line_new(handler);
+	if(l) {
+		if(!tree_add(branches, trigger, &l->c, (tree_f)site_tree_cmp)) {
+			return 0;
+		}
+	} else {
+		return 0;
+	}
+	
+	return 1;
+}
+
 unsigned int site_handle(struct ftpd_client_ctx *client, char *line) {
 	struct {
 		struct ftpd_client_ctx *client;
@@ -216,7 +235,7 @@ unsigned int site_handle(struct ftpd_client_ctx *client, char *line) {
 	}
 
 	/* call all handlers found for that command */
-	collection_iterate(handlers, call_site_handlers, &ctx);
+	collection_iterate(handlers, (collection_f)call_site_handlers, &ctx);
 
 	if(ctx.args) {
 		free(ctx.args);

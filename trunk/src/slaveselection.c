@@ -33,6 +33,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include <windows.h>
 
 #include "constants.h"
@@ -262,7 +263,7 @@ struct slave_connection *call_selectionup(struct collection *selection, struct v
 	return object.ret.ptr;
 }
 
-static unsigned int build_selectiondown_list(struct collection *c, void *item, void *param) {
+static int build_selectiondown_list(struct collection *c, void *item, void *param) {
 	struct slave_connection *cnx = item;
 	struct collection *selection = param;
 
@@ -272,7 +273,7 @@ static unsigned int build_selectiondown_list(struct collection *c, void *item, v
 	return 1;
 }
 
-static unsigned int build_selectionup_list(struct collection *c, void *item, void *param) {
+static int build_selectionup_list(struct collection *c, void *item, void *param) {
 	struct slave_ctx *slave = item;
 	struct collection *selection = param;
 
@@ -284,7 +285,7 @@ static unsigned int build_selectionup_list(struct collection *c, void *item, voi
 	return 1;
 }
 
-static unsigned int get_less_busy_connection(struct collection *c, void *item, void *param) {
+static int get_less_busy_connection(struct collection *c, void *item, void *param) {
 	struct slave_connection *cnx = item;
 	struct {
 		unsigned int connections;
@@ -314,11 +315,11 @@ struct slave_connection *slaveselection_download(struct vfs_element *file) {
 
 	if(!collection_size(file->available_from)) {
 		/* file is unavailable */
-		SLAVESELECTION_DBG("Unavailable");
+		//SLAVESELECTION_DBG("Unavailable");
 		return NULL;
 	}
 
-	selection = collection_new();
+	selection = collection_new(C_NONE);
 
 	/* transfer all available slaves into the collection */
 	collection_iterate(file->available_from, build_selectiondown_list, selection);
@@ -373,8 +374,13 @@ struct slave_connection *slaveselection_upload(struct vfs_element *folder) {
 		SLAVESELECTION_DBG("No section mapped on folder %s", folder->name);
 		return NULL;
 	}
+	
+	if(!collection_size(section->slaves)) {
+		/* No transfer-slave available ... */
+		return NULL;
+	}
 
-	selection = collection_new();
+	selection = collection_new(C_NONE);
 
 	/* transfer all available slave connections into the collection */
 	collection_iterate(section->slaves, build_selectionup_list, selection);

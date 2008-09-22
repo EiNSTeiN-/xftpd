@@ -41,6 +41,7 @@
 #include <sys/stat.h>
 #include <direct.h>
 
+#include "asprintf.h"
 #include "collection.h"
 #include "socket.h"
 #include "io.h"
@@ -56,20 +57,23 @@
 #include "slaves.h"
 #include "signal.h"
 #include "proxy.h"
+#include "adio.h"
 
 #include "constants.h"
+
+static struct slave_main_ctx main_ctx;
 
 /* name of this slave */
 static char *slave_name = NULL;
 
-static unsigned int master_ip = 0;
+static char *master_host = 0;
 static unsigned short master_port = 0;
 static unsigned int master_connections = 0;
 
 struct collection *enqueued_packets = NULL;
 
 struct collection *mapped_disks = NULL; /* contain disk_map structs */
-static unsigned int next_uid = 0;
+//static unsigned int next_uid = 0;
 struct disk_map *current_disk; /* the disk currently used to store files */
 
 static unsigned short current_local_port = 0;
@@ -78,7 +82,7 @@ static unsigned short fsd_high_data_port = 50000;
 
 static unsigned int fsd_buffer_up =  1 * 1024 * 1024;
 static unsigned int fsd_buffer_down =  1 * 1024 * 1024;
-static char *working_buffer = NULL;
+//static char *working_buffer = NULL;
 
 static struct collection *xfers_collection = NULL;
 
@@ -99,32 +103,21 @@ static unsigned int use_pasv_proxy = 0;
 static unsigned int pasv_proxy_ip = 0;
 static unsigned short pasv_proxy_port = 0;
 
+static unsigned int fsd_delete_incomplete_uploads = SLAVE_DELETE_INCOMPLETE_UPLOADS;
+
+static struct collection *xfer_monitored_adio = NULL;
 
 /* return 0 if the current_disk is not valid */
-static unsigned int rotate_disks() {
+static int rotate_disks() {
 
-	if(!current_disk) {
-		next_uid = 0;
-		current_disk = collection_next(mapped_disks, &next_uid);
+	/* rotate disks if there's none loaded OR if the current one reached its threshold */
+	if(!current_disk || (current_disk->current_files >= current_disk->threshold)) {
+		current_disk = collection_first(mapped_disks);
 		if(!current_disk) {
-			SLAVE_DBG("NO disk loaded!");
+			SLAVE_DBG("There is no 'next' disk in the collection of mapped disks!");
 			return 0;
 		}
-
-		current_disk->current_files = 0;
-		return 1;
-	}
-
-	if(current_disk->current_files >= current_disk->threshold) {
-		current_disk = collection_next(mapped_disks, &next_uid);
-		if(!current_disk) {
-			next_uid = 0;
-			current_disk = collection_next(mapped_disks, &next_uid);
-			if(!current_disk) {
-				SLAVE_DBG("NO disk loaded!");
-				return 0;
-			}
-		}
+		collection_movelast(mapped_disks, current_disk);
 
 		current_disk->current_files = 0;
 		return 1;
@@ -151,6 +144,35 @@ int _stat64(
    struct __stat64 *buffer 
 );
 
+static void delete_xfer(struct slave_xfer *xfer);
+	
+static void file_map_obj_destroy(struct file_map *file) {
+	
+	collectible_destroy(file);
+	
+	/* delete all xfers from that file */
+	if(file->xfers) {
+		while(collection_size(file->xfers)) {
+			struct slave_xfer *xfer = collection_first(file->xfers);
+			delete_xfer(xfer);
+			collection_delete(file->xfers, xfer);
+		}
+		collection_destroy(file->xfers);
+		file->xfers = NULL;
+	}
+
+	if(file->sfv) {
+		file->sfv->file = NULL;
+		fsd_sfv_delete(file->sfv);
+		file->sfv = NULL;
+	}
+
+	file->disk = NULL;
+	free(file);
+
+	return;
+}
+
 /* add a file map to the specified disk
 	the name is like \dir\file.bin relative to disk->path */
 static struct file_map *file_map_add(struct disk_map *disk, const char *name) {
@@ -163,10 +185,15 @@ static struct file_map *file_map_add(struct disk_map *disk, const char *name) {
 		SLAVE_DBG("Memory error");
 		return NULL;
 	}
+	
+	obj_init(&file->o, file, (obj_f)file_map_obj_destroy);
+	collectible_init(file);
+	
+	file->sfv = NULL;
 	file->disk = disk;
 	strcpy(file->name, name);
 
-	file->xfers = collection_new();
+	file->xfers = collection_new(C_CASCADE);
 
 	/* verify that we can access the file both way */
 	full_name = malloc(strlen(disk->path) + strlen(name) + 1);
@@ -194,13 +221,13 @@ static struct file_map *file_map_add(struct disk_map *disk, const char *name) {
 
 	file->io.refcount = 0;
 	file->io.upload = 0;
-	file->io.stream = -1;
+	file->io.adio = NULL;
 
 	return file;
 }
 
 /* used by lookup_file */
-static unsigned int lookup_file_on_disk_callback(struct collection *c, void *item, void *param) {
+static int lookup_file_on_disk_callback(struct collection *c, void *item, void *param) {
 	struct file_map *file = item;
 	struct {
 		char *name;
@@ -216,7 +243,7 @@ static unsigned int lookup_file_on_disk_callback(struct collection *c, void *ite
 }
 
 /* used by lookup_file */
-static unsigned int lookup_file_callback(struct collection *c, void *item, void *param) {
+static int lookup_file_callback(struct collection *c, void *item, void *param) {
 	struct disk_map *disk = item;
 	struct {
 		char *name;
@@ -266,8 +293,6 @@ void _rmdir_recursive(char *path, char *toremove) {
 	return;
 }
 
-static void delete_xfer(struct slave_xfer *xfer);
-
 /* delete the file from disk,
 	close all data connections if some are open,
 	delete the parent folder if there's one & if
@@ -281,41 +306,30 @@ static void file_unmap(struct file_map *file) {
 	if(fullname) {
 		sprintf(fullname, "%s%s", file->disk->path, &file->name[1]);
 	}
-
-	/* delete all xfers from that file */
-	if(file->xfers) {
-		collection_void(file->xfers);
-		while(collection_size(file->xfers)) {
-			struct slave_xfer *xfer = collection_first(file->xfers);
-			delete_xfer(xfer);
-			collection_delete(file->xfers, xfer);
-		}
-		collection_destroy(file->xfers);
-		file->xfers = NULL;
-	}
-
-	/* unlink the file from its owner disk */
-	collection_delete(file->disk->files_collection, file);
-
+	
 	/* delete the file on disk */
 	if(fullname) {
 		remove(fullname);
 		free(fullname);
 	}
-	
+
 	fullname = &file->name[1];
 	ptr = strchr(fullname, '\\');
 	if(ptr) {
 		while(strchr(ptr+1, '\\')) ptr = strchr(ptr+1, '\\');
 		*ptr = 0;
 
-		if(strlen(fullname))
+		if(strlen(fullname)) {
 			_rmdir_recursive(file->disk->path, fullname);
+		}
+		
+		*ptr = '\\';
 	}
+	
+	collection_void(file->xfers);
 
-	file->disk = NULL;
-	free(file);
-
+	obj_destroy(&file->o);
+	
 	return;
 }
 
@@ -340,8 +354,43 @@ static struct slave_xfer *get_xfer_from_uid(unsigned long long int uid) {
 	return xfer;
 }
 
+struct fsd_collectible_ptr {
+	struct obj o;
+	struct collectible c;
+	void *ptr;
+} __attribute__((packed));
+
+void fsd_ptr_obj_destroy(struct fsd_collectible_ptr *ptr) {
+	
+	collectible_destroy(ptr);
+	free(ptr);
+	
+	return;
+}
+
+void fsd_ptr_destroy(struct fsd_collectible_ptr *ptr) {
+	
+	obj_destroy(&ptr->o);
+	return;
+}
+
+struct fsd_collectible_ptr *fsd_ptr_new(void *p) {
+	struct fsd_collectible_ptr *ptr;
+	
+	ptr = malloc(sizeof(struct fsd_collectible_ptr));
+		
+	obj_init(&ptr->o, ptr, (obj_f)fsd_ptr_obj_destroy);
+	collectible_init(ptr);
+	
+	ptr->ptr = p;
+	
+	return ptr;
+}
+
+
 /* enqueue a packet to be sent to the master */
 static unsigned int enqueue_packet(unsigned long long int uid, unsigned int type, void *data, unsigned int data_length) {
+	struct fsd_collectible_ptr *ptr;
 	struct packet *p;
 
 	if(!data && data_length) {
@@ -361,9 +410,15 @@ static unsigned int enqueue_packet(unsigned long long int uid, unsigned int type
 	if(data) {
 		memcpy(&p->data[0], data, data_length);
 	}
-
-	if(!collection_add(enqueued_packets, p)) {
-		SLAVE_DBG("Collection error");
+	
+	ptr = fsd_ptr_new(p);
+	if(ptr) {
+		if(!collection_add(enqueued_packets, ptr)) {
+			SLAVE_DBG("Collection error");
+			free(p);
+			return 0;
+		}
+	} else {
 		free(p);
 		return 0;
 	}
@@ -475,6 +530,75 @@ static unsigned int process_file_list(struct io_context *io, struct packet *p) {
 		SLAVE_DIALOG_DBG("%I64u: File list response built (%u bytes)", p->uid, ctx2.offset);
 	}
 
+	return 1;
+}
+
+static unsigned int process_slave_update(struct io_context *io, struct packet *p) {
+	char full_path[MAX_PATH];
+	char *data;
+	unsigned int size;
+	FILE *f;
+	char *filename;
+	char *params;
+	
+	data = &p->data[0];
+	size = packet_data_length(p);
+	
+	/* We've just got to write the file to disk, execute it, and then exit */
+	
+	filename = bprintf(SLAVE_UPDATE_FILENAME_PATTERN, time_now());
+	if(!filename) {
+		SLAVE_DBG("Memory error with update filename");
+		reply_failure(io, p);
+		return 1;
+	}
+
+	GetModuleFileName(NULL, full_path, sizeof(full_path));
+	
+	/* Execute the update file */
+	params = bprintf("update %s", full_path);
+	if(!params) {
+		SLAVE_DBG("Memory error with update params");
+		reply_failure(io, p);
+		return 1;
+	}
+	
+	f = fopen(filename, "wb");
+	if(!f) {
+		SLAVE_DBG("Could not open update file %s", filename);
+		free(filename);
+		free(params);
+		reply_failure(io, p);
+		return 1;
+	}
+	
+	if(fwrite(data, size, 1, f) != 1) {
+		SLAVE_DBG("Could not write data to update file");
+		fclose(f);
+		remove(filename);
+		free(params);
+		free(filename);
+		reply_failure(io, p);
+		return 1;
+	}
+	fclose(f);
+	
+	if(ShellExecute(NULL, "open", filename, params, "", SW_HIDE) <= (HINSTANCE)32) {
+		SLAVE_DBG("Could not ShellExecute the update file");
+		remove(filename);
+		free(filename);
+		free(params);
+		reply_failure(io, p);
+		return 1;
+	}
+	SLAVE_DBG("Update process is going on well! Filename: \"%s\", params: \"%s\"", filename, params);
+	
+	free(filename);
+	free(params);
+	
+	/* Send the termination signal */
+	main_ctx.slave_is_dead = 1;
+	
 	return 1;
 }
 
@@ -619,6 +743,122 @@ static unsigned int process_slave_sfv(struct io_context *io, struct packet *p) {
 	return 1;
 }
 
+static int sfvlog_append_entries(struct collection *c, struct fsd_sfv_entry *entry, void *param) {
+	struct {
+		char *buffer;
+		unsigned int current;
+		unsigned int filled;
+		unsigned int success;
+	} *ctx = param;
+	struct sfvlog_entry *sfventry;
+	
+	ctx->buffer = realloc(ctx->buffer, ctx->current + ctx->filled + sizeof(struct sfvlog_entry) + strlen(entry->filename) + 1);
+	if(!ctx->buffer) {
+		SLAVE_DBG("Memory error with %u bytes",
+			ctx->current + ctx->filled + sizeof(struct sfvlog_entry) + strlen(entry->filename) + 1);
+		ctx->success = 0;
+		return 0;
+	}
+	
+	sfventry = (struct sfvlog_entry *)((char *)&ctx->buffer[ctx->current + ctx->filled]);
+	
+	sfventry->crc = entry->crc;
+	memcpy(sfventry->filename, entry->filename, strlen(entry->filename)+1);
+	
+	ctx->filled += sizeof(struct sfvlog_entry) + strlen(entry->filename) + 1;
+	
+	//SLAVE_DBG("Added sfv entry %s / crc %08x", entry->filename, entry->crc);
+	
+	return 1;
+}
+
+static unsigned int process_slave_sfvlog(struct io_context *io, struct packet *p) {
+	unsigned int input_current, input_length;
+	unsigned int filled = 0;
+	char *filename;
+	char *buffer = NULL;
+	struct file_map *file;
+	unsigned int i;
+	
+	unsigned int total_sfv = 0, total_entries = 0;
+	
+	
+	SLAVE_DBG("%I64u: SFVLOG query received", p->uid);
+
+	/*
+		The buffer we receive is an array of zero-terminated strings that
+		are sfv files whose content we need to send to the master.
+	*/
+	
+	input_length = packet_data_length(p);
+	input_current = 0;
+	while(input_current < input_length) {
+		filename = &p->data[input_current];
+		
+		for(i=0;i<strlen(filename);i++) if(filename[i] == '/') filename[i] = '\\';
+		
+		/* try to locally find the file & check if it has a sfv attached to it */
+		file = lookup_file(filename);
+		if(file && file->sfv) {
+			struct sfvlog_file *sfvfile;
+			
+			total_sfv++;
+			
+			buffer = realloc(buffer, filled + sizeof(struct sfvlog_file)+strlen(file->name)+1);
+			if(!buffer) {
+				SLAVE_DBG("Memory error with sfvlog buffer");
+				return 0;
+			}
+			
+			sfvfile = (struct sfvlog_file *)((char *)&buffer[filled]);
+			memcpy(sfvfile->filename, file->name, strlen(file->name)+1);
+			
+			sfvfile->next = sizeof(struct sfvlog_file)+strlen(file->name)+1;
+			
+			{
+				struct {
+					char *buffer;
+					unsigned int current;
+					unsigned int filled;
+					unsigned int success;
+				} ctx = { buffer, filled + sfvfile->next, 0, 1 };
+				
+				collection_iterate(file->sfv->entries, (collection_f)sfvlog_append_entries, &ctx);
+				if(!ctx.buffer || !ctx.success) {
+					SLAVE_DBG("Error while appending entries");
+					free(ctx.buffer);
+					return 0;
+				}
+				
+				//SLAVE_DBG("Included %u bytes of entries for %s", ctx.filled, file->name);
+				
+				total_entries += collection_size(file->sfv->entries);
+				
+				buffer = ctx.buffer;
+				sfvfile = (struct sfvlog_file *)((char *)&buffer[filled]);
+				
+				sfvfile->next += ctx.filled;
+				filled += sfvfile->next;
+			}
+		} else {
+			SLAVE_DBG("Could not find sfv infos for %s", filename);
+		}
+		
+		input_current += strlen(filename)+1;
+	}
+	
+	if(!enqueue_packet(p->uid, IO_SFVLOG, buffer, filled)) {
+		SLAVE_DBG("%I64u: Enqueue packet failed.", p->uid);
+		free(buffer);
+		return 0;
+	}
+	free(buffer);
+
+	SLAVE_DBG("%I64u: SFVLOG response build (%u bytes, %u files, %u entries)", p->uid, filled, total_sfv, total_entries);
+
+	return 1;
+}
+
 /* used by process_hello */
 static unsigned int make_stats_diskspace(struct collection *c, struct disk_map *disk, struct stats_global *gstats) {
 	struct _diskfree_t driveinfo;
@@ -734,13 +974,15 @@ static unsigned int process_hello(struct io_context *io, struct packet *p) {
 		return 0;
 	}
 
+	data->platform = SLAVE_PLATFORM_CURRENT;
+	data->rev = SLAVE_REVISION_NUMBER;
 	data->diskfree = 0;
 	data->disktotal = 0;
+	data->now = time_now();
+	
 	collection_iterate(mapped_disks, (collection_f)make_hello_diskspace, data);
 
 	strcpy(data->name, slave_name);
-
-	data->now = time_now();
 
 	if(!enqueue_packet(p->uid, IO_HELLO, data, data_length)) {
 		free(data);
@@ -860,10 +1102,10 @@ static unsigned int process_public_key(struct io_context *io, struct packet *p) 
 	return 1;
 }
 
-/* destroy a slave_xfer structure, close the file if its refcount
-	reach zero */
-static void xfer_destroy(struct slave_xfer *xfer) {
-
+static void xfer_obj_destroy(struct slave_xfer *xfer) {
+	
+	collectible_destroy(xfer);
+	
 	if(xfer->group) {
 		signal_clear(xfer->group);
 		collection_destroy(xfer->group);
@@ -885,31 +1127,59 @@ static void xfer_destroy(struct slave_xfer *xfer) {
 		free(xfer->reply);
 		xfer->reply = NULL;
 	}
+	
+	if(xfer->buffer) {
+		free(xfer->buffer);
+		xfer->buffer = NULL;
+	}
+	
+	if(xfer->op) {
+		adio_complete(xfer->op);
+		xfer->op = NULL;
+	}
 
 	if(xfer->file) {
 		if(xfer->file->io.refcount) {
 			xfer->file->io.refcount--;
-
+			
 			if(!xfer->file->io.refcount) {
 				/* no more downloads on that file, close it */
-
+				
 				SLAVE_DBG("File %s is no longer in use", xfer->file->name);
-
-				if(xfer->file->io.stream != -1) {
+				
+				/*if(xfer->file->io.stream != -1) {
 					_close(xfer->file->io.stream);
 					xfer->file->io.stream = -1;
+				}*/
+				
+				if(xfer->file->io.adio) {
+					adio_close(xfer->file->io.adio);
+					xfer->file->io.adio = NULL;
+				} else {
+					SLAVE_DBG("ERROR: no file's adio!");
 				}
 			}
+		} else {
+			SLAVE_DBG("ERROR: file is referenced but refcount is null");
 		}
 
-		collection_delete(xfer->file->xfers, xfer);
+		//collection_delete(xfer->file->xfers, xfer);
 		xfer->file = NULL;
+	} else {
+		SLAVE_DBG("ERROR: no file pointer while destroying xfer");
 	}
 
-	collection_delete(xfers_collection, xfer);
-
 	free(xfer);
+	
+	return;
+}
 
+/* destroy a slave_xfer structure, close the file if its refcount
+	reach zero */
+static void xfer_destroy(struct slave_xfer *xfer) {
+
+	obj_destroy(&xfer->o);
+	
 	return;
 }
 
@@ -926,7 +1196,7 @@ static void delete_xfer(struct slave_xfer *xfer) {
 
 	xfer_destroy(xfer);
 
-	if(upload && file) {
+	if(upload && file && fsd_delete_incomplete_uploads) {
 		/* client was uploding, we shall remove the file */
 		file_unmap(file);
 	}
@@ -939,11 +1209,22 @@ static void delete_xfer(struct slave_xfer *xfer) {
 	return;
 }
 
+static int xfer_destroy_uploading(struct collection *c, struct slave_xfer *xfer, void *param) {
+	
+	if(xfer->upload && fsd_delete_incomplete_uploads) {
+		/* If the client was downloading we must delete the file because it is obviously not complete */
+		delete_xfer(xfer);
+	}
+	
+	return 1;
+}
+
 /* xfer finished the right way */
 /* send some infos about the transfer to the client */
 static void complete_xfer(struct slave_xfer *xfer) {
 	/* send the amount of data transfered with the reply */
 	struct slave_transfer_reply data;
+	unsigned int namelen;
 
 	/* total size transfered */
 	if(xfer->file) {
@@ -962,18 +1243,52 @@ static void complete_xfer(struct slave_xfer *xfer) {
 	SLAVE_DBG("%I64u: Transfer complete: %I64u bytes transfered, checksum is %08x (time: %I64u)",
 			xfer->uid, xfer->xfered, xfer->checksum, time_now());
 
-	/* send TRASNFERED to the master */
-	enqueue_packet(xfer->asynch_uid, IO_SLAVE_TRANSFERED, &data, sizeof(data));
+	if(xfer->asynch_uid != -1) {
+		/* send TRASNFERED to the master */
+		enqueue_packet(xfer->asynch_uid, IO_SLAVE_TRANSFERED, &data, sizeof(data));
+	}
+	
+	if(xfer->file) {
+		/* if this file is a sfv, read it and add its contents to the file's structure. */
+		namelen = strlen(xfer->file->name);
+		if((namelen > 4) && !stricmp(&xfer->file->name[namelen-4], ".sfv")) {
+			sfv_parse(xfer->file);
+		}
+	}
 	
 	xfer_destroy(xfer);
 
 	return;
 }
 
+int xfer_monitor_adio(struct slave_xfer *xfer) {
+
+	/*
+		in this case we need to make sure we
+		don't still have data to write to disk.
+	*/
+	
+	socket_monitor_fd_closed(xfer->fd);
+	close_socket(xfer->fd);
+	
+	collection_empty(xfer->group);
+	
+	xfer->fd = -1;
+	
+	SLAVE_DBG("%I64u: Peer connection was closed, still monitoring for adio.", xfer->uid);
+	
+	collection_add(xfer_monitored_adio, xfer);
+	
+	return 1;
+}
+
 int xfer_read(int fd, struct slave_xfer *xfer) {
 	unsigned int ret;
 	int size, avail;
-	unsigned long long int timediff;
+	unsigned int room;
+	int success = 1;
+	//unsigned long long int timediff;
+
 
 	if(!xfer->proxy_connected) {
 
@@ -1042,7 +1357,6 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		return 1;
 	}
 	
-	/* if we're supposed to receive data here, we do it */
 	if(!xfer->ready || !xfer->connected) {
 		//SLAVE_DBG("%I64u: File transfer is not yet ready (download)", xfer->uid);
 		return 1;
@@ -1083,19 +1397,92 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		}
 	}
 */
-	do {
-		/* get the size available from the buffer */
-		avail = socket_avail(fd);
-		if(avail > xfer->buffersize) {
-			avail = xfer->buffersize;
-		}
 
+	/*
+		The user is uploading. What we need to do is:
+			1. Check if there is still data that is being written to the file from the last
+				read. This would probably mean the user is sending faster than we can write
+				it to disk.
+			2. If it's the case,
+				1. We'll write the data at the end of the buffer untill the buffer is full.
+			3. If it's not the case,
+				1. We'll check if there is data written at the end of the buffer from #2.
+				2. If it's the case, we'll move the data at the beginning of the buffer.
+				3. We will proceed to reading any data that is available from the socket
+				4. We'll start an adio operation to write this data to the disk.
+	
+		From the moment the close request is issued by the peer, we'll have to:
+			1. Monitor the operation untill all the remaining data from the buffer is written to the disk.
+			2. Destroy this structure & the xfer as soon as it's done.
+	*/
+	
+	if(xfer->op && xfer->op_active) {
+		
+		success = adio_probe(xfer->op, &xfer->op_done);
+		
+		if(success == -1) {
+			/* error while writing to file !? */
+			SLAVE_DBG("%I64u: adio_probe returned error.", xfer->uid);
+			delete_xfer(xfer);
+			return 0;
+		}
+		
+		/*if(!success) {
+			SLAVE_DBG("%I64u: adio_probe returned operation has processed %u bytes on %u", xfer->uid, xfer->op_done, xfer->op_length);
+		}*/
+		
+		if(success == 1) {
+			/*SLAVE_DBG("%I64u: adio_probe returned operation complete with %u bytes (in %I64u ms)",
+				xfer->uid, xfer->op_done, timer(xfer->op->timestamp));*/
+			
+			/* we finished writing the data to disk! */
+			//adio_complete(xfer->op);
+			//xfer->op = NULL;
+			
+			/* move the extra data to the start of the buffer */
+			if(xfer->op_pointer - xfer->op_length) {
+				memmove(&xfer->buffer[0], &xfer->buffer[xfer->op_length], (xfer->op_pointer - xfer->op_length));
+			}
+			
+			/* adjust the pointers. */
+			xfer->op_pointer = (xfer->op_pointer - xfer->op_length);
+			xfer->op_length = 0;
+			xfer->op_done = 0;
+			
+			xfer->op_active = 0;
+		}
+	}
+	
+	/* Check if there's room for more data */
+	room = (xfer->buffersize - xfer->op_pointer);
+	if(!room && xfer->op_active) {
+		SLAVE_DBG("%I64u: Damn, the buffer is full! Skipping on %u bytes... (%I64u ms)", xfer->uid, socket_avail(fd), xfer->op ? timer(xfer->op->timestamp) : 0);
+		
+		/* would be a very good idea to increase here */
+		
+		return 1;
+	}
+	
+	/*
+		it may happen that we do not have any room here
+		but we still need to start writing to make some
+	*/
+	if(room) {
+		/* get the number of bytes we'll read ... */
+		avail = socket_avail(fd);
+		if(avail > room) {
+			avail = room;
+		}
+		
 		/* read the most data we can from the socket */
-		size = recv(fd, working_buffer, avail, 0);
+		size = recv(fd, &xfer->buffer[xfer->op_pointer], avail, 0);
+		
+		/* those will never happen because of the underlying socket system. */
 		if(size == 0) {
 			/* socket closed, connection complete */
-			SLAVE_DBG("%I64u: Socket closed. transfer complete?", xfer->uid);
-			complete_xfer(xfer);
+			SLAVE_DBG("%I64u: Socket closed. transfer complete? (should not have happened!)", xfer->uid);
+			//complete_xfer(xfer);
+			xfer_monitor_adio(xfer);
 			return 1;
 		}
 		if(size < 0) {
@@ -1104,29 +1491,86 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 			delete_xfer(xfer);
 			return 1;
 		}
-
-		crc32_add(&xfer->checksum, working_buffer, size);
-
-		_lseeki64(xfer->file->io.stream, xfer->restart, SEEK_SET);
-
-		/* write to file */
-		if(_write(xfer->file->io.stream, working_buffer, size) != size) {
-			/* write error */
-			SLAVE_DBG("%I64u: _write() error on %s%s at %I64u", xfer->uid, xfer->file->disk->path,
-				&xfer->file->name[1], _telli64(xfer->file->io.stream));
-			delete_xfer(xfer);
-			return 1;
+		
+		if(size != avail) {
+			SLAVE_DBG("%I64u: Was reaching for %u, only got %u bytes", xfer->uid, avail, size);
 		}
-
-		_commit(xfer->file->io.stream);
-
+		
+		/* Update the checksum */
+		crc32_add(&xfer->checksum, &xfer->buffer[xfer->op_pointer], size);
+		
+		/* Update the operation pointer. */
+		xfer->op_pointer += size;
 		xfer->xfered += size;
 		xfer->file->size += size;
-		xfer->restart += size;
-		xfer->speedsize += size;
-
-		/* try again 'til the buffer's empty */
-	} while(socket_avail(fd));
+	}
+	
+	/* If there is no operation currently started, start one now */
+	if(!xfer->op_active && xfer->op_pointer) {
+		
+		if(xfer->op_pointer >= (xfer->buffersize / 2)) {
+			/* start writing only when the buffer is 50% filled. */
+			
+			xfer->op_done = 0;
+			xfer->op_length = xfer->op_pointer;
+			
+			xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
+			if(!xfer->op) {
+				SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+				delete_xfer(xfer);
+				return 0;
+			}
+			//SLAVE_DBG("%I64u: Writing %u bytes to file at %u.", xfer->uid, xfer->op_length, xfer->restart);
+			
+			xfer->op_active = 1;
+			
+			/* update the restart point of the file */
+			xfer->restart += xfer->op_length;
+		}
+	}
+	
+	//~ do {
+		//~ /* get the size available from the buffer */
+		
+		//~ /* read the most data we can from the socket */
+		//~ size = recv(fd, working_buffer, avail, 0);
+		
+		//~ /* those will never happen because of the socket system. */
+		//~ if(size == 0) {
+			//~ /* socket closed, connection complete */
+			//~ SLAVE_DBG("%I64u: Socket closed. transfer complete? (should not have happened!)", xfer->uid);
+			//~ complete_xfer(xfer);
+			//~ return 1;
+		//~ }
+		//~ if(size < 0) {
+			//~ /* socket error */
+			//~ SLAVE_DBG("%I64u: recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, avail);
+			//~ delete_xfer(xfer);
+			//~ return 1;
+		//~ }
+		
+		//~ crc32_add(&xfer->checksum, working_buffer, size);
+		
+		//~ _lseeki64(xfer->file->io.stream, xfer->restart, SEEK_SET);
+		
+		//~ /* write to file */
+		//~ if(_write(xfer->file->io.stream, working_buffer, size) != size) {
+			//~ /* write error */
+			//~ SLAVE_DBG("%I64u: _write() error on %s%s at %I64u", xfer->uid, xfer->file->disk->path,
+				//~ &xfer->file->name[1], _telli64(xfer->file->io.stream));
+			//~ delete_xfer(xfer);
+			//~ return 1;
+		//~ }
+		
+		//~ _commit(xfer->file->io.stream);
+		
+		//~ xfer->xfered += size;
+		//~ xfer->file->size += size;
+		//~ xfer->restart += size;
+		//~ xfer->speedsize += size;
+		
+		//~ /* try again 'til the buffer's empty */
+	//~ } while(socket_avail(fd));
 
 	//SLAVE_DBG("%I64u: %u bytes received.", xfer->uid, size);
 
@@ -1135,8 +1579,9 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 
 int xfer_write(int fd, struct slave_xfer *xfer) {
 	unsigned int rem_size, size;
-	int read_size, write_size;
-	unsigned long long int timediff;
+	int write_size;
+	//unsigned long long int timediff;
+	int success = 1;
 
 	if(!xfer->proxy_connected) {
 
@@ -1173,19 +1618,6 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		delete_xfer(xfer);
 		return 0;
 	}
-	
-	if(xfer->restart == xfer->file->size) {
-		/* xfer completed successfuly, now we tell the master */
-		if(!xfer->completed) {
-			SLAVE_DBG("%I64u: Transfer completed successfully. Sutting down socket. (time: %I64u)", xfer->uid, time_now());
-			
-			make_socket_blocking(fd, 1);
-			shutdown(fd, SD_SEND);
-
-			xfer->completed = 1;
-		}
-		return 1;
-	}
 
 	/*
 	timediff = timer(xfer->speedcheck);
@@ -1217,41 +1649,153 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		}
 	}*/
 
-	/* size remaining to be uploaded */
-	rem_size = (unsigned int)(xfer->file->size - xfer->restart);
+	/*
+		The user is downloading, we need to send him stuff.
+		1. Check if there is data available from the adio operation.
+		2. Send the available data.
+		3. Start a new adio operation if there is still more data to be sent.
+	*/
 
-	size = xfer->buffersize;
-	if(size > rem_size)
-		size = rem_size;
-
-	/* set the correct position in file */
-	_lseeki64(xfer->file->io.stream, xfer->restart, SEEK_SET);
-
-	/* read from file */
-	read_size = _read(xfer->file->io.stream, working_buffer, size);
-	if(read_size <= 0) {
-		/* read error */
-		SLAVE_DBG("%I64u: _read error on %s%s at %I64u for %u", xfer->uid, xfer->file->disk->path,
-			xfer->file->name, _telli64(xfer->file->io.stream), size);
-		delete_xfer(xfer);
+	if(xfer->op && xfer->op_active) {
+		success = adio_probe(xfer->op, &xfer->op_done);
+		if(success == -1) {
+			SLAVE_DBG("%I64u: adio probe returned an error", xfer->uid);
+			delete_xfer(xfer);
+			return 1;
+		}
+		
+		if(!success) {
+			SLAVE_DBG("%I64u: adio_probe returned operation has processed %u bytes on %u", xfer->uid, xfer->op_done, xfer->op_length);
+		}
+		
+		if(success == 1) {
+			//SLAVE_DBG("%I64u: adio probe returned operation complete with %u bytes (in %I64u ms)", xfer->uid, xfer->op_done, timer(xfer->op->timestamp));
+			//adio_complete(xfer->op);
+			//xfer->op = NULL;
+			//return 1;
+			//xfer->op_length = 0;
+			//xfer->op_done = 0;
+			//xfer->op_pointer = 0;
+			xfer->op_active = 0;
+		}
+	}
+	
+	if(xfer->completed) {
+		//SLAVE_DBG("%I64u: Completed but still called...", xfer->uid);
 		return 1;
 	}
 	
-	/* write to client */
-	write_size = send(fd, working_buffer, read_size, 0);
-	if(write_size <= 0) {
-		/* send error */
-		SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
-		SLAVE_DBG("%I64u: send() error: %u wanted, %u done (connection reset?).", xfer->uid, read_size, write_size);
-		delete_xfer(xfer);
+	if(xfer->file->size == xfer->xfered) {
+		SLAVE_DBG("%I64u: Transfer completed successfully. Sutting down socket. (time: %I64u)", xfer->uid, time_now());
+		
+		make_socket_blocking(fd, 1);
+		shutdown(fd, SD_SEND);
+		
+		xfer->completed = 1;
+		
 		return 1;
 	}
+	
+	rem_size = (xfer->op_done - xfer->op_pointer);
+	if(rem_size) {
+		//SLAVE_DBG("%I64u: There's %u more bytes to be uploaded.", xfer->uid, rem_size);
+	}
 
-	crc32_add(&xfer->checksum, working_buffer, write_size);
+	if(rem_size) {
+		/* there's data to send over the socket */
+		
+		write_size = send(fd, &xfer->buffer[xfer->op_pointer], rem_size, 0);
+		if(write_size <= 0) {
+			/* send error */
+			SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
+			SLAVE_DBG("%I64u: send() error: %u wanted, %d done (connection reset?).", xfer->uid, rem_size, write_size);
+			delete_xfer(xfer);
+			return 1;
+		}
+		
+		if(write_size != rem_size) {
+			SLAVE_DBG("%I64u: Was sending %u bytes, could only send %u bytes.", xfer->uid, rem_size, write_size);
+		}
+		
+		crc32_add(&xfer->checksum, &xfer->buffer[xfer->op_pointer], write_size);
+		
+		xfer->op_pointer += write_size;
+		xfer->xfered += write_size;
+	}
+	
+	/* if there's no operation started just yet, start one. */
+	if(!xfer->op_active) {
+		
+		rem_size = (xfer->file->size - xfer->restart);
+		
+		if(rem_size) {
+			size = (xfer->buffersize > rem_size) ? rem_size : xfer->buffersize;
+			
+			xfer->op = adio_read(xfer->file->io.adio, xfer->buffer, xfer->restart, size, xfer->op);
+			if(!xfer->op) {
+				SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+				delete_xfer(xfer);
+				return 0;
+			}
+			
+			//SLAVE_DBG("%I64u: Reading %u bytes at %u", xfer->uid, size, xfer->restart);
+			
+			xfer->op_active = 1;
+			xfer->op_pointer = 0;
+			xfer->op_length = size;
+			xfer->op_done = 0;
+			
+			xfer->restart += size;
+		} else {
+			/* good, there's no more operation going on AND we've reached the EOF */
+			if(!xfer->completed) {
+				SLAVE_DBG("%I64u: Transfer completed successfully. Sutting down socket. (time: %I64u)", xfer->uid, time_now());
+				
+				make_socket_blocking(fd, 1);
+				shutdown(fd, SD_SEND);
+				
+				xfer->completed = 1;
+				
+				return 1;
+			}
+		}
+	}
 
-	xfer->xfered += write_size;
-	xfer->restart += write_size;
-	xfer->speedsize += write_size;
+	//~ /* size remaining to be uploaded */
+	//~ rem_size = (unsigned int)(xfer->file->size - xfer->restart);
+
+	//~ size = xfer->buffersize;
+	//~ if(size > rem_size)
+		//~ size = rem_size;
+
+	//~ /* set the correct position in file */
+	//~ _lseeki64(xfer->file->io.stream, xfer->restart, SEEK_SET);
+
+	//~ /* read from file */
+	//~ read_size = _read(xfer->file->io.stream, working_buffer, size);
+	//~ if(read_size <= 0) {
+		//~ /* read error */
+		//~ SLAVE_DBG("%I64u: _read error on %s%s at %I64u for %u", xfer->uid, xfer->file->disk->path,
+			//~ xfer->file->name, _telli64(xfer->file->io.stream), size);
+		//~ delete_xfer(xfer);
+		//~ return 1;
+	//~ }
+	
+	//~ /* write to client */
+	//~ write_size = send(fd, working_buffer, read_size, 0);
+	//~ if(write_size <= 0) {
+		//~ /* send error */
+		//~ SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
+		//~ SLAVE_DBG("%I64u: send() error: %u wanted, %u done (connection reset?).", xfer->uid, read_size, write_size);
+		//~ delete_xfer(xfer);
+		//~ return 1;
+	//~ }
+
+	//~ crc32_add(&xfer->checksum, working_buffer, write_size);
+
+	//~ xfer->xfered += write_size;
+	//~ xfer->restart += write_size;
+	//~ xfer->speedsize += write_size;
 
 	return 1;
 }
@@ -1261,8 +1805,80 @@ int xfer_close(int fd, struct slave_xfer *xfer) {
 	SLAVE_DBG("%I64u: Graceful closure of the socket.", xfer->uid);
 
 	/* connection closed gracefully */
-	complete_xfer(xfer);
+	if(xfer->upload) {
+		xfer_monitor_adio(xfer);
+	} else {
+		complete_xfer(xfer);
+	}
 
+	return 1;
+}
+
+static int xfer_adio_poll_callback(struct collection *c, struct slave_xfer *xfer, void *param) {
+	int success;
+	
+	/* Check if the adio operation has completed. */
+	
+	if((xfer->op_pointer != xfer->op_length) && !xfer->op_active) {
+		SLAVE_DBG("%I64u: There is still %u bytes to be written to disk...", xfer->uid, (xfer->op_pointer - xfer->op_length));
+		
+		/* move the extra data to the start of the buffer */
+		if(xfer->op_pointer - xfer->op_length) {
+			memmove(&xfer->buffer[0], &xfer->buffer[xfer->op_length], (xfer->op_pointer - xfer->op_length));
+		}
+		
+		/* adjust the pointers. */
+		xfer->op_pointer = (xfer->op_pointer - xfer->op_length);
+		xfer->op_length = (xfer->op_pointer - xfer->op_length);
+		xfer->op_done = 0;
+		
+		xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
+		if(!xfer->op) {
+			SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+			delete_xfer(xfer);
+			return 0;
+		}
+		
+		xfer->op_active = 1;
+		
+		/* update the restart point of the file */
+		xfer->restart += xfer->op_length;
+	}
+	
+	if(!xfer->op) {
+		/* wierd */
+		SLAVE_DBG("%I64u: Wierd, monitored xfer had no adio operation", xfer->uid);
+		complete_xfer(xfer);
+		return 1;
+	}
+	
+	success = adio_probe(xfer->op, &xfer->op_done);
+	if(success == -1) {
+		SLAVE_DBG("%I64u: Monitored adio probe returned error.", xfer->uid);
+		return 1;
+	}
+	if(success == 0) {
+		//SLAVE_DBG("%I64u: Monitored adio probe returned only %u bytes done on %u bytes total.", xfer->uid, xfer->op_done, xfer->op_length);
+		return 1;
+	}
+	if(success == 1) {
+		//SLAVE_DBG("%I64u: Monitored adio probe complete with %u bytes (in %I64u ms)", xfer->uid, xfer->op_done, timer(xfer->op->timestamp));
+		
+		if(xfer->op_pointer == xfer->op_length) {
+			complete_xfer(xfer);
+		} else {
+			xfer->op_active = 0;
+		}
+		return 1;
+	}
+	
+	return 1;
+}
+
+static int xfer_adio_poll() {
+	
+	collection_iterate(xfer_monitored_adio, (collection_f)xfer_adio_poll_callback, NULL);
+	
 	return 1;
 }
 
@@ -1317,7 +1933,6 @@ int xfer_connect_timeout(struct slave_xfer *xfer) {
 	return 1;
 }
 
-
 int xfer_setup_socket(struct slave_xfer *xfer) {
 	int err;
 
@@ -1325,14 +1940,14 @@ int xfer_setup_socket(struct slave_xfer *xfer) {
 	if(xfer->upload) {
 		xfer->lastsize = fsd_buffer_down;
 		SLAVE_DBG("%I64u: Setting max read size to %u", xfer->uid, fsd_buffer_down);
-		err = socket_set_max_read(xfer->fd, fsd_buffer_down);
+		err = socket_set_max_read(xfer->fd, (fsd_buffer_down*2)+3);
 		if(err) {
 			SLAVE_DBG("%I64u: Error was: %u", xfer->uid, err);
 		}
 	} else {
 		xfer->lastsize = fsd_buffer_up;
 		SLAVE_DBG("%I64u: Setting max write size to %u", xfer->uid, fsd_buffer_up);
-		err = socket_set_max_write(xfer->fd, fsd_buffer_up);
+		err = socket_set_max_write(xfer->fd, (fsd_buffer_up*2)+3);
 		if(err) {
 			SLAVE_DBG("%I64u: Error was: %u", xfer->uid, err);
 		}
@@ -1446,12 +2061,25 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 		SLAVE_DBG("%I64u: Memory error", p->uid);
 		return 0;
 	}
+	
+	obj_init(&xfer->o, xfer, (obj_f)xfer_obj_destroy);
+	collectible_init(xfer);
 
-	xfer->group = collection_new();
+	xfer->group = collection_new(C_CASCADE);
 	xfer->fd = -1;
 	xfer->restart = 0;
 	xfer->asynch_uid = -1;
 	xfer->file = NULL;
+	
+	xfer->op = NULL;
+	xfer->buffer = NULL;
+	xfer->buffersize = 0;
+	xfer->buffer = NULL;
+	xfer->op_length = 0;
+	xfer->op_done = 0;
+	xfer->op_pointer = 0;
+	xfer->op_active = 0;
+	
 	xfer->ready = 0;
 	xfer->uid = req->xfer_uid;
 	xfer->passive = 1;
@@ -1554,48 +2182,86 @@ static unsigned int setup_file_io(struct slave_xfer *xfer) {
 
 	/* check if the file is already open. */
 	if(xfer->file->io.refcount) {
-
 		if(xfer->file->io.upload != xfer->upload) {
 			/* client requesting to download a file that is
 				currently being uploaded */
 			SLAVE_DBG("%I64u: Client request for different operation than current", xfer->uid);
 			return 0;
 		}
-
-		xfer->file->io.refcount++;
-		return 1;
 	}
-
-	/* find the complete filename */
-	filename = malloc(strlen(xfer->file->disk->path) + strlen(xfer->file->name) + 1);
-	if(!filename) {
+	
+	if(xfer->upload) {
+		xfer->buffersize = fsd_buffer_up;
+		xfer->buffer = malloc(fsd_buffer_up);
+	} else {
+		xfer->buffersize = fsd_buffer_down;
+		xfer->buffer = malloc(fsd_buffer_down);
+	}
+	
+	if(!xfer->buffer) {
 		SLAVE_DBG("%I64u: Memory error", xfer->uid);
 		return 0;
 	}
-	sprintf(filename, "%s%s", xfer->file->disk->path, &xfer->file->name[1]);
+	
+	/* if the file was not already open, set it up */
+	if(!xfer->file->io.refcount) {
 
-	/* open the file */
-	if(xfer->upload) {
-		/* try to remove the file, just in case it was already there.
-			overwrite permissions must be handled on master side */
-		//_unlink(filename);
-		xfer->file->io.stream = _open(filename, _O_WRONLY | _O_BINARY /*| _O_SEQUENTIAL*/, _S_IREAD | _S_IWRITE);
-	} else {
-		xfer->file->io.stream = _open(filename, _O_RDONLY | _O_BINARY /*| _O_SEQUENTIAL*/);
-	}
+		/* find the complete filename */
+		filename = malloc(strlen(xfer->file->disk->path) + strlen(xfer->file->name) + 1);
+		if(!filename) {
+			SLAVE_DBG("%I64u: Memory error", xfer->uid);
+			return 0;
+		}
+		sprintf(filename, "%s%s", xfer->file->disk->path, &xfer->file->name[1]);
+		
+		/* open the file */
+		if(xfer->upload) {
+			//xfer->file->io.stream = _open(filename, _O_WRONLY | _O_BINARY /*| _O_SEQUENTIAL*/, _S_IREAD | _S_IWRITE);
+			/* on upload the file cannot already exist. */
+			xfer->file->io.adio = adio_open(filename, 1);
+		} else {
+			//xfer->file->io.stream = _open(filename, _O_RDONLY | _O_BINARY /*| _O_SEQUENTIAL*/);
+			/* on download the file must already exist */
+			xfer->file->io.adio = adio_open(filename, 0);
+		}
+		
+		if(!xfer->file->io.adio) {
+			SLAVE_DBG("%I64u: File %s could not be opened", xfer->uid, filename);
 
-	if(xfer->file->io.stream == -1) {
-		SLAVE_DBG("%I64u: File %s could not be opened", xfer->uid, filename);
-
+			free(filename);
+			return 0;
+		}
 		free(filename);
-		return 0;
+
+		/* file open & ready ! */
+		xfer->file->io.upload = xfer->upload;
 	}
-	free(filename);
-
-	/* file open & ready ! */
-	xfer->file->io.upload = xfer->upload;
+	
+	/* signal that we're one more */
 	xfer->file->io.refcount++;
-
+	
+	/* now create the asynchronous operation */
+	if(!xfer->file->io.upload) {
+		/* we can start reading from the file right now-- we beleive the whole file will be read. */
+		xfer->op_length = ((xfer->buffersize > xfer->file->size) ? xfer->file->size : xfer->buffersize);
+		xfer->op = adio_read(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
+		
+		if(!xfer->op) {
+			SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+			xfer->file->io.refcount--;
+			if(!xfer->file->io.refcount) {
+				adio_close(xfer->file->io.adio);
+				xfer->file->io.adio = NULL;
+			}
+			return 0;
+		}
+		xfer->restart += xfer->op_length;
+		xfer->op_active = 1;
+	} else  {
+		/* we can't start writing to the file just now ... */
+		//xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->buffersize, xfer->op);
+	}
+	
 	return 1;
 }
 
@@ -1673,21 +2339,24 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
 		}
-
+		
+		obj_init(&xfer->o, xfer, (obj_f)xfer_obj_destroy);
+		collectible_init(xfer);
+		
 		/* these infos will already be set for passive connections
 			so we must set them now on active connections */
 		xfer->uid = req->xfer_uid;
-
+		
 		xfer->passive = 0;
-
+		
 		xfer->completed = 0;
 		xfer->connected = 0;
 		xfer->ip = req->ip;
 		xfer->port = req->port;
-		xfer->group = collection_new();
+		xfer->group = collection_new(C_CASCADE);
 		xfer->query = NULL;
 		xfer->reply = NULL;
-
+		
 		if(use_data_proxy) {
 			xfer->fd = connect_to_ip_non_blocking(data_proxy_ip, data_proxy_port);
 			xfer->proxy_connected = 0;
@@ -1697,7 +2366,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 			xfer->fd = connect_to_ip_non_blocking(xfer->ip, xfer->port);
 			xfer->proxy_connected = 1;
 		}
-
+		
 		if(xfer->fd == -1) {
 			/* socket failure */
 			SLAVE_DBG("%I64u: Could not create socket", p->uid);
@@ -1705,7 +2374,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
 		}
-
+		
 		if(!collection_add(xfers_collection, xfer)) {
 			SLAVE_DBG("%I64u: Collection error", p->uid);
 			xfer_destroy(xfer);
@@ -1727,10 +2396,10 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 
 		if(use_data_proxy) {
 			struct proxy_connect connect;
-
+			
 			connect.ip = xfer->ip;
 			connect.port = xfer->port;
-
+			
 			/* add the "connect" packet for the proxy */
 			xfer->query = packet_new(current_proxy_uid++, PROXY_CONNECT, &connect, sizeof(connect));
 			if(!xfer->query) {
@@ -1750,7 +2419,14 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 	xfer->timestamp = time_now();
 	xfer->xfered = 0;
 	xfer->file = NULL;
-	xfer->buffersize = req->upload ? fsd_buffer_up : fsd_buffer_down;
+	
+	xfer->op = NULL;
+	xfer->buffersize = 0;
+	xfer->buffer = NULL;
+	xfer->op_length = 0;
+	xfer->op_done = 0;
+	xfer->op_pointer = 0;
+	xfer->op_active = 0;
 
 	xfer->ready = 1;
 
@@ -1819,6 +2495,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 
 	if(!setup_file_io(xfer)) {
 		SLAVE_DBG("%I64u: Failed to setup file i/o", p->uid);
+		xfer->file = NULL;
 		xfer_destroy(xfer);
 		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 		return 1;
@@ -1956,8 +2633,14 @@ static unsigned int handle_inputs(struct io_context *io) {
 	case IO_SFV: /* reply with FAILURE or the same type */
 		ret = process_slave_sfv(io, p);
 		break;
+	case IO_SFVLOG:
+		ret = process_slave_sfvlog(io, p);
+		break;
 	case IO_STATS: /* reply with FAILURE or the same type */
 		ret = process_slave_stats(io, p);
+		break;
+	case IO_UPDATE: /* reply with FAILURE or the same type */
+		ret = process_slave_update(io, p);
 		break;
 	default:
 		ret = reply_failure(io, p);
@@ -1970,11 +2653,12 @@ static unsigned int handle_inputs(struct io_context *io) {
 
 /* send the first packet in the queue to the master */
 static unsigned int handle_outputs(struct io_context *io) {
+	struct fsd_collectible_ptr *ptr;
 	struct packet *p;
 	unsigned int success;
 
-	p = collection_first(enqueued_packets);
-	if(!p)
+	ptr = collection_first(enqueued_packets);
+	if(!ptr)
 		/* no packet to be sent, it's alright */
 		return 1;
 
@@ -1982,12 +2666,175 @@ static unsigned int handle_outputs(struct io_context *io) {
 		we must delete the packet now because
 		io_write_packet may relocate it...
 	*/
-	collection_delete(enqueued_packets, p);
+	p = (struct packet *)ptr->ptr;
+	ptr->ptr = NULL;
+	collection_delete(enqueued_packets, ptr);
 
 	success = io_write_packet(io, &p);
 	free(p);
 
 	return success;
+}
+
+static unsigned int get_entry_matcher(struct collection *c, struct fsd_sfv_entry *entry, char *filename) {
+
+	return !stricmp(entry->filename, filename);
+}
+
+/* this function does not check for duplicates, it returns the
+	first entry matching the given filename */
+struct fsd_sfv_entry *fsd_sfv_get_entry(struct fsd_sfv_ctx *sfv, char *filename) {
+	struct fsd_sfv_entry *entry;
+
+	if(!sfv || !filename) return 0;
+
+	entry = collection_match(sfv->entries, (collection_f)get_entry_matcher, filename);
+
+	return entry;
+}
+
+static void sfv_entry_obj_destroy(struct fsd_sfv_entry *entry) {
+	
+	collectible_destroy(entry);
+	free(entry);
+	
+	return;
+}
+
+/*
+	in the current implementation, this function override the
+	current crc if an entry exists for the 'filename'.
+*/
+struct fsd_sfv_entry *fsd_sfv_add_entry(struct fsd_sfv_ctx *sfv, char *filename, unsigned int crc) {
+	struct fsd_sfv_entry *entry;
+
+	if(!sfv || !filename) return NULL;
+
+	entry = fsd_sfv_get_entry(sfv, filename);
+	if(!entry) {
+		entry = malloc(sizeof(struct fsd_sfv_entry)+strlen(filename)+1);
+		if(!entry) {
+			SLAVE_DBG("Memory error");
+			return 0;
+		}
+		
+		obj_init(&entry->o, entry, (obj_f)sfv_entry_obj_destroy);
+		collectible_init(entry);
+
+		entry->crc = crc;
+		sprintf(entry->filename, filename);
+
+		collection_add(sfv->entries, entry);
+	} else {
+		if(entry->crc != crc) return NULL;
+	}
+
+	return entry;
+}
+
+static void sfv_obj_destroy(struct fsd_sfv_ctx *sfv) {
+	
+	collectible_destroy(sfv);
+	
+	if(sfv->entries) {
+		collection_destroy(sfv->entries);
+		sfv->entries = NULL;
+	}
+
+	if(sfv->file) {
+		sfv->file->sfv = NULL;
+		sfv->file = NULL;
+	}
+
+	free(sfv);
+	
+	return;
+}
+
+
+/* delete the sfv structure and all its entries */
+void fsd_sfv_delete(struct fsd_sfv_ctx *sfv) {
+
+	if(!sfv) return;
+
+	collection_void(sfv->entries);
+	obj_destroy(&sfv->o);
+
+	return;
+}
+
+unsigned int sfv_parse(struct file_map *file) {
+	char line[1024];
+	char *path, *_crc;
+	unsigned int crc;
+	unsigned int i;
+	FILE *s;
+
+	if(!file->sfv) {
+		file->sfv = malloc(sizeof(struct fsd_sfv_ctx));
+		if(!file->sfv) {
+			SLAVE_DBG("Memory error");
+			return 1;
+		}
+		
+		obj_init(&file->sfv->o, file->sfv, (obj_f)sfv_obj_destroy);
+		collectible_init(file->sfv);
+		
+		file->sfv->entries = collection_new(C_CASCADE);
+		file->sfv->file = file;
+		
+	}
+
+	path = malloc(strlen(file->disk->path)+strlen(file->name)+1);
+	if(!path) {
+		SLAVE_DBG("Memory error");
+		return 0;
+	}
+	sprintf(path, "%s%s", file->disk->path, &file->name[1]);
+
+	s = fopen(path, "r");
+	if(!s) {
+		SLAVE_DBG("File %s could not be opened", path);
+		free(path);
+		return 0;
+	}
+	free(path);
+
+	while(!feof(s)) {
+		if(!fgets(line, sizeof(line)-1, s)) break;
+
+		/* got a line, now parse if */
+		if(line[0] == ';') continue;
+	
+		for(i=0;i<strlen(line);i++)
+			if((line[i] == '\r') || (line[i] == '\n')) line[i] = 0;
+
+		_crc = strchr(line, ' ');
+		if(!_crc) continue;
+		while(strchr(_crc+1, ' ')) _crc = strchr(_crc+1, ' ');
+
+		*_crc = 0;
+		_crc++;
+
+		if(strlen(_crc) != 8) continue;
+
+		/* translate the password in hex */
+		for(i=0;i<strlen(_crc);i++) {
+			if(!valid_hex(_crc[i])) continue;
+		}
+
+		crc = 0;
+
+		for(i=0;i<strlen(_crc);i++) {
+			crc |= (char_to_hex(_crc[i]) << (32-(4 * ((i % 8)+1))));
+		}
+
+		fsd_sfv_add_entry(file->sfv, line, crc);
+	}
+
+	fclose(s);
+
+	return 1;
 }
 
 /* store all files found in 'path' and add it to the file list of 'disk' */
@@ -2030,10 +2877,18 @@ static unsigned int map_files_from_path(struct disk_map *disk, const char *path)
 				continue;
 			}
 		} else {
+			unsigned int namelen;
+
 			file = file_map_add(disk, sub_path);
 			if(!file) {
 				free(sub_path);
 				continue;
+			}
+
+			/* if this file is a sfv, read it and add its contents to the file's structure. */
+			namelen = strlen(file->name);
+			if((namelen > 4) && !stricmp(&file->name[namelen-4], ".sfv")) {
+				sfv_parse(file);
 			}
 		}
 
@@ -2079,6 +2934,18 @@ static char *normalize_path(const char *path) {
 	return normalized;
 }
 
+static void disk_map_obj_destroy(struct disk_map *disk) {
+	
+	collectible_destroy(disk);
+	
+	collection_destroy(disk->files_collection);
+	disk->files_collection = NULL;
+	
+	free(disk);
+	
+	return;
+}
+
 /* add a disk map to the mapped disks collection */
 static struct disk_map *disk_map_add(const char *path, unsigned int threshold) {
 	struct disk_map *disk;
@@ -2103,6 +2970,9 @@ static struct disk_map *disk_map_add(const char *path, unsigned int threshold) {
 		}
 		strcpy(disk->path, path);
 	}
+	
+	obj_init(&disk->o, disk, (obj_f)disk_map_obj_destroy);
+	collectible_init(disk);
 
 	if((disk->path[0] >= 'a') && (disk->path[0] <= 'z')) drive = disk->path[0] - 'a'+1;
 	if((disk->path[0] >= 'A') && (disk->path[0] <= 'Z')) drive = disk->path[0] - 'A'+1;
@@ -2129,7 +2999,7 @@ static struct disk_map *disk_map_add(const char *path, unsigned int threshold) {
 	disk->current_files = 0;
 	disk->threshold = threshold;
 
-	disk->files_collection = collection_new();
+	disk->files_collection = collection_new(C_CASCADE);
 	if(!collection_add(mapped_disks, disk)) {
 		collection_destroy(disk->files_collection);
 		free(disk);
@@ -2191,14 +3061,14 @@ static unsigned int load_config() {
 		SLAVE_DBG("slave.buffer.download was invalid, defaulted to %u", SLAVE_DN_BUFFER_SIZE);
 		fsd_buffer_down = SLAVE_DN_BUFFER_SIZE;
 	}
-
+/*
 	working_buffer = malloc(fsd_buffer_up > fsd_buffer_down ? fsd_buffer_up : fsd_buffer_down);
 	if(!working_buffer) {
 		SLAVE_DBG("Error while allocating working buffer: %u bytes is too much?",
 			fsd_buffer_up > fsd_buffer_down ? fsd_buffer_up : fsd_buffer_down);
 		return 0;
 	}
-
+*/
 	/* load master connection count */
 	master_connections = config_raw_read_int(SLAVE_CONFIG_FILE, "master.connections", 0);
 
@@ -2209,19 +3079,19 @@ static unsigned int load_config() {
 		return 0;
 	}
 
+	/*
+		load whether we are to delete the
+		uploaded files when they fail to be
+		transfered completely
+	*/
+	fsd_delete_incomplete_uploads = config_raw_read_int(SLAVE_CONFIG_FILE, "slave.delete-failed-uploads", SLAVE_DELETE_INCOMPLETE_UPLOADS);
 	
 	/* load the master hostname */
-	p = config_raw_read(SLAVE_CONFIG_FILE, "master.host", NULL);
-	if(!p) {
+	master_host = config_raw_read(SLAVE_CONFIG_FILE, "master.host", NULL);
+	if(!master_host) {
 		SLAVE_DBG("master.host not set!");
 		return 0;
 	}
-
-	i = socket_addr(p);
-	if(i && (i != -1))
-		master_ip = i;
-
-	free(p);
 
 	/* load the master connection port */
 	master_port = config_raw_read_int(SLAVE_CONFIG_FILE, "master.port", 0);
@@ -2281,18 +3151,7 @@ static unsigned int load_config() {
 	return 1;
 }
 
-struct main_ctx {
-	unsigned int connected;
-	struct io_context io;
-	struct collection *group;
-
-	int proxy_connected;
-	struct packet *query;
-	struct packet *reply;
-	unsigned int filledsize;
-};
-
-int main_socket_read(int fd, struct main_ctx *main_ctx) {
+int main_socket_read(int fd, struct slave_main_ctx *main_ctx) {
 	unsigned int ret;
 
 	if(!main_ctx->proxy_connected) {
@@ -2336,13 +3195,13 @@ int main_socket_read(int fd, struct main_ctx *main_ctx) {
 	return 1;
 }
 
-int main_socket_read_timeout(struct main_ctx *main_ctx) {
+int main_socket_read_timeout(struct slave_main_ctx *main_ctx) {
 	SLAVE_DBG("Timeout while reading from master");
 	main_ctx->connected = 0;
 	return 0;
 }
 
-int main_socket_write(int fd, struct main_ctx *main_ctx) {
+int main_socket_write(int fd, struct slave_main_ctx *main_ctx) {
 
 	if(!main_ctx->proxy_connected && main_ctx->query) {
 
@@ -2366,13 +3225,13 @@ int main_socket_write(int fd, struct main_ctx *main_ctx) {
 	return 1;
 }
 
-int main_socket_write_timeout(struct main_ctx *main_ctx) {
+int main_socket_write_timeout(struct slave_main_ctx *main_ctx) {
 	SLAVE_DBG("Timeout while writing to master");
 	main_ctx->connected = 0;
 	return 0;
 }
 
-int main_socket_connect(int fd, struct main_ctx *main_ctx) {
+int main_socket_connect(int fd, struct slave_main_ctx *main_ctx) {
 	struct proxy_connect connect;
 	struct signal_callback *s;
 
@@ -2392,7 +3251,7 @@ int main_socket_connect(int fd, struct main_ctx *main_ctx) {
 	if(!use_proxy) {
 		main_ctx->proxy_connected = 1;
 	} else {
-		connect.ip = master_ip;
+		connect.ip = socket_addr(master_host);
 		connect.port = master_port;
 
 		main_ctx->query = packet_new(current_proxy_uid++, PROXY_CONNECT, &connect, sizeof(connect));
@@ -2409,7 +3268,7 @@ int main_socket_connect(int fd, struct main_ctx *main_ctx) {
 	return 1;
 }
 
-int main_socket_error(int fd, struct main_ctx *main_ctx) {
+int main_socket_error(int fd, struct slave_main_ctx *main_ctx) {
 
 	/* connection error on master socket */
 	SLAVE_DBG("Main socket caused an error");
@@ -2419,7 +3278,7 @@ int main_socket_error(int fd, struct main_ctx *main_ctx) {
 	return 1;
 }
 
-int main_socket_close(int fd, struct main_ctx *main_ctx) {
+int main_socket_close(int fd, struct slave_main_ctx *main_ctx) {
 
 	/* connection closed on master socket */
 	SLAVE_DBG("Main socket closed gracefully");
@@ -2444,114 +3303,214 @@ void set_current_path() {
 	return;
 }
 
+void check_update_process(int argc, char *argv[]) {
+	char full_path[MAX_PATH];
+	unsigned int i;
+	char *data;
+	unsigned int size;
+	FILE *f;
+	char *params;
+	
+	GetModuleFileName(NULL, full_path, sizeof(full_path));
+	
+	SLAVE_DBG("Current slave's revision is %I64u", SLAVE_REVISION_NUMBER);
+	SLAVE_DBG("Executed from \"%s\"", full_path);
+	
+	for(i=0;i<argc-1;i++) if(!stricmp(argv[i], "delete")) {
+		
+		if(!stricmp(full_path, argv[i+1])) {
+			SLAVE_DBG("File scheduled for deletion is this executable: \"%s\"", argv[i+1]);
+			break;
+		}
+		
+		SLAVE_DBG("Update process is deleting the update file \"%s\"", argv[i+1]);
+		
+		/* Wait 30 seconds so the other executable can exit properly */
+		Sleep(30000);
+		
+		/* Delete the other executable from disk */
+		remove(argv[i+1]);
+		
+		SLAVE_DBG("The update process is not COMPLETE.");
+	}
+	
+	for(i=0;i<argc-1;i++) if(!stricmp(argv[i], "update")) {
+		
+		if(!stricmp(full_path, argv[i+1])) {
+			SLAVE_DBG("Executed from update location: \"%s\"", argv[i+1]);
+			break;
+		}
+		
+		SLAVE_DBG("Update process is started, updating to \"%s\"", argv[i+1]);
+		
+		/* Wait 30 seconds so the other executable can exit properly */
+		Sleep(30000);
+		
+		/* Delete the other executable from disk */
+		remove(argv[i+1]);
+		
+		data = config_load_file(full_path, &size);
+		if(!data) {
+			SLAVE_DBG("Cannot read the target file: cannot copy it to its correct name.");
+			break;
+		}
+		
+		/* Copy the file to its new location */
+		f = fopen(argv[i+1], "wb");
+		if(!f) {
+			SLAVE_DBG("Could not open target file %s", argv[i+1]);
+			break;
+		}
+		
+		if(fwrite(data, size, 1, f) != 1) {
+			SLAVE_DBG("Could not write data to target file");
+			fclose(f);
+			remove(argv[i+1]);
+			break;
+		}
+		fclose(f);
+		
+		params = bprintf("delete %s", full_path);
+		if(ShellExecute(NULL, "open", argv[i+1], params ? params : "", "", SW_HIDE) <= (HINSTANCE)32) {
+			SLAVE_DBG("Could not ShellExecute the target file");
+			free(params);
+			remove(argv[i+1]);
+			break;
+		}
+		
+		SLAVE_DBG("Taget file is created and executed. Filename: \"%s\", params: \"%s\"", argv[i+1], params);
+		free(params);
+		
+		exit(0);
+	}
+	
+	return;
+}
+
 #ifdef SLAVE_WIN32_SERVICE
 int win32_service_main() {
 #else
 int main(int argc, char* argv[]) {
 #endif
 	unsigned long long int attempts = 0;
-	struct main_ctx main_ctx;
 
 	set_current_path();
 
 #ifdef SLAVE_SILENT_CRASH
 	SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
 #endif
+	
+	// just ensure that the file doesn't get too big
+	remove("debug.log");
+	
+#ifndef SLAVE_WIN32_SERVICE
+	check_update_process(argc, argv);
+#endif
 
 	crypto_init();
 	socket_init();
 
-	mapped_disks = collection_new();
+	mapped_disks = collection_new(C_CASCADE);
 
-	enqueued_packets = collection_new();
-	xfers_collection = collection_new();
-	main_ctx.group = collection_new();
+	enqueued_packets = collection_new(C_CASCADE);
+	xfers_collection = collection_new(C_CASCADE);
+	main_ctx.group = collection_new(C_CASCADE);
+	
+	xfer_monitored_adio = collection_new(C_CASCADE);
+	
+	main_ctx.slave_is_dead = 0;
 
 	if(!load_config()) {
 		SLAVE_DBG("Could not load config from " SLAVE_CONFIG_FILE);
 		return 1;
 	}
+	
+	if(!rotate_disks()) {
+		SLAVE_DBG("There appears to be no disk loaded!");
+		return 1;
+	}
 
-	while(!master_connections || (attempts < master_connections)) {
-
+	while((!master_connections || (attempts < master_connections)) && !main_ctx.slave_is_dead) {
+		
 		attempts++;
-
-		if(!master_connections)
+		
+		if(!master_connections) {
 			SLAVE_DBG("Connection attempt #%I64u on (infinite)", attempts);
-		else
+		} else {
 			SLAVE_DBG("Connection attempt #%I64u on (%u)", attempts, master_connections);
-
-
+		}
+		
 		/* create the socket */
 		main_ctx.io.p = NULL;
 		main_ctx.io.filled_size = 0;
 		main_ctx.io.flags = 0;
 		main_ctx.io.compression_threshold = 0;
-		main_ctx.io.fd = connect_to_ip_non_blocking(use_proxy ? proxy_ip : master_ip, use_proxy ? proxy_port : master_port);
+		if(use_proxy) {
+			main_ctx.io.fd = connect_to_ip_non_blocking(proxy_ip, proxy_port);
+		} else {
+			main_ctx.io.fd = connect_to_host_non_blocking(master_host, master_port);
+		}
 		if(main_ctx.io.fd == -1) {
 			SLAVE_DBG("Could not create main socket");
 			Sleep(10000);
 			continue;
 		}
-
+	
 		/* register the socket monitor and all events */
 		socket_monitor_new(main_ctx.io.fd, 0, 0);
 		socket_monitor_signal_add(main_ctx.io.fd, main_ctx.group, "socket-connect", (signal_f)main_socket_connect, &main_ctx);
 		socket_monitor_signal_add(main_ctx.io.fd, main_ctx.group, "socket-error", (signal_f)main_socket_error, &main_ctx);
 		socket_monitor_signal_add(main_ctx.io.fd, main_ctx.group, "socket-close", (signal_f)main_socket_close, &main_ctx);
-
+		
 		main_ctx.connected = 1;
-
+		
 		/* loop until we are disconnected from the master */
 		do {
-
-			//signal_poll();
-
 			socket_poll();
-
+			xfer_adio_poll();
+			collection_cleanup_iterators();
 			Sleep(SLAVE_SLEEP_TIME);
-
-		} while(main_ctx.connected);
-
+		} while(main_ctx.connected && !main_ctx.slave_is_dead);
+		
 		SLAVE_DBG("Connection lost from master !");
-
+		
 		signal_clear(main_ctx.group);
-
+		
 		if(main_ctx.io.fd != -1) {
 			//signal_clear_all_with_filter(main_ctx.group, (void *)main_ctx.io.fd);
 			socket_monitor_fd_closed(main_ctx.io.fd);
 			close_socket(main_ctx.io.fd);
 			main_ctx.io.fd = -1;
 		}
-
+		
 		if(main_ctx.io.p) {
 			free(main_ctx.io.p);
 			main_ctx.io.p = NULL;
 		}
-
+		
 		/* we lost connection to master,
 			cleanup all xfers. */
-		while(collection_size(xfers_collection)) {
-			void *first = collection_first(xfers_collection);
-			xfer_destroy(first);
-			collection_delete(xfers_collection, first);
-		}
-
+		collection_iterate(xfers_collection, (collection_f)xfer_destroy_uploading, NULL);
+		collection_empty(xfers_collection);
+		
 		/* also cleanup all enqueued packets */
 		while(collection_size(enqueued_packets)) {
-			void *first = collection_first(enqueued_packets);
-			free(first);
-			collection_delete(enqueued_packets, first);
+			struct fsd_collectible_ptr *first = collection_first(enqueued_packets);
+			free(first->ptr);
+			fsd_ptr_destroy(first);
 		}
-
+		collection_empty(enqueued_packets);
+		
 		Sleep(10000);
 	}
 
-	SLAVE_DBG("Giving up connection attempts !");
+	SLAVE_DBG("Main thread is exiting");
 
 	collection_destroy(main_ctx.group);
 	collection_destroy(enqueued_packets);
 	collection_destroy(xfers_collection);
+	
+	collection_destroy(xfer_monitored_adio);
 
 	socket_free();
 	crypto_free();
@@ -2566,6 +3525,8 @@ int main(int argc, char* argv[]) {
 	char *desc;
 	
 	set_current_path();
+	
+	check_update_process(argc, argv);
 
 	name = config_raw_read(SLAVE_CONFIG_FILE, "slave.service.name", "xFTPd-slave");
 	displayname = config_raw_read(SLAVE_CONFIG_FILE, "slave.service.displayname", "xFTPd-slave");

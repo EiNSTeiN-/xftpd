@@ -64,8 +64,8 @@ struct mirror_lua_ctx {
 
 typedef struct mirror_side mirror_side;
 struct mirror_side {
-	unsigned int finished;
-	unsigned int pasv;
+	char finished;
+	char pasv;
 
 	/* transfer checksum */
 	unsigned int checksum;
@@ -79,8 +79,11 @@ struct mirror_side {
 
 typedef struct mirror_ctx mirror_ctx;
 struct mirror_ctx {
-	//unsigned int canceled;
 	struct obj o;
+	struct collectible c;
+
+	/* volatile config file, not backed up on disk */
+	struct config_file *volatile_config;
 
 	unsigned long long int uid; /* unique id shared with both slaves */
 	unsigned long long int timestamp; /* transfer start */
@@ -92,7 +95,7 @@ struct mirror_ctx {
 	void *callback_param;
 
 	/* success of the mirror operation  */
-	int success;
+	char success;
 
 	struct mirror_side source;
 	struct mirror_side target;

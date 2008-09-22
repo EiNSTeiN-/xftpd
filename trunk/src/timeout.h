@@ -54,6 +54,9 @@
 
 typedef struct timeout_ctx timeout_ctx;
 struct timeout_ctx {
+	struct obj o;
+	struct collectible c;
+	
 	unsigned long long int timestamp; /* time of the last call */
 	unsigned long long int timeout; /* timeout in milliseconds */
 	char *function; /* function to call */

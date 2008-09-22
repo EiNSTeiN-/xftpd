@@ -63,6 +63,8 @@ struct packet {
 	unsigned char data[];
 } __attribute__((packed));
 
+#define packet_data_length(_p) ((_p)->size - sizeof(struct packet))
+
 /* this function may return 0 with a non-null *p if the whole packet could not be read.
 	in this case, the function must be called again to complete the operation.
 	if the function return 0 with a null *p, then the function failed. */

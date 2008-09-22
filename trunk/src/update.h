@@ -33,34 +33,25 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "users.h"
+#ifndef __UPDATE_H
+#define __UPDATE_H
 
+#include "constants.h"
 
-typedef struct {
-	collectible c @ collectible;
+#ifndef NO_FTPD_DEBUG
+#  define DEBUG_UPDATE
+#endif
 
-	config_file *config;
+#ifdef DEBUG_UPDATE
+# ifdef FTPD_DEBUG_TO_CONSOLE
+#  define UPDATE_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+# else
+#  define UPDATE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+# endif
+#else
+#  define UPDATE_DBG(format, arg...)
+#endif
 
-	char *username;
-	char *usergroup;
+int update_slave(struct slave_connection *ctx, const char *filename);
 
-	unsigned int disabled; /* 1 if the user is disabled */
-
-	_collection *clients;
-} user_ctx;
-
-module users {
-	extern _collection *users @ all;
-
-	user_ctx *user_new @ add(char *username, char *usergroup, char *password);
-	user_ctx *user_get @ get(char *username);
-
-	unsigned int user_auth @ auth(user_ctx *user, char *password);
-	unsigned int user_disable @ disable(user_ctx *user, unsigned int disabled);
-	unsigned int user_delete @ delete(user_ctx *user);
-	
-	int user_set_group @ chgroup(user_ctx *user, char *group);
-	int user_set_password @ chpass(user_ctx *user, char *password);
-
-	//user_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
-}
+#endif /* __UPDATE_H */

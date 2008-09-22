@@ -59,6 +59,7 @@ $pfile "timeout_bind.pkg"
 $pfile "mirror_bind.pkg"
 $pfile "site_bind.pkg"
 $pfile "nuke_bind.pkg"
+$pfile "update_bind.pkg"
 
 // include the xFTPd helper file
 $lfile "xFTPd.lua"

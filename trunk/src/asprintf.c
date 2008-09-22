@@ -33,7 +33,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 /* MinGW lacks asprintf */
 
 #include <stdio.h>

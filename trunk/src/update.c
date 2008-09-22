@@ -33,34 +33,48 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "users.h"
+#include <windows.h>
 
+#include "io.h"
+#include "slaves.h"
+#include "asynch.h"
+#include "config.h"
 
-typedef struct {
-	collectible c @ collectible;
+#include "update.h"
 
-	config_file *config;
-
-	char *username;
-	char *usergroup;
-
-	unsigned int disabled; /* 1 if the user is disabled */
-
-	_collection *clients;
-} user_ctx;
-
-module users {
-	extern _collection *users @ all;
-
-	user_ctx *user_new @ add(char *username, char *usergroup, char *password);
-	user_ctx *user_get @ get(char *username);
-
-	unsigned int user_auth @ auth(user_ctx *user, char *password);
-	unsigned int user_disable @ disable(user_ctx *user, unsigned int disabled);
-	unsigned int user_delete @ delete(user_ctx *user);
+static unsigned int update_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 	
-	int user_set_group @ chgroup(user_ctx *user, char *group);
-	int user_set_password @ chpass(user_ctx *user, char *password);
-
-	//user_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	UPDATE_DBG("%I64u: Update response received: update failed ?", cmd->uid);
+	
+	return 1;
 }
+
+/* Send an update packet to all slaves */
+int update_slave(struct slave_connection *cnx, const char *filename) {
+	struct slave_asynch_command *cmd;
+	unsigned int size;
+	char *buffer;
+	
+	/* Load the file to memory. */
+	buffer = config_load_file(filename, &size);
+	if(!buffer) {
+		UPDATE_DBG("Could not load %s from disk!", filename);
+		return 0;
+	}
+	
+	/* Send the update packet to the slave. */
+	cmd = asynch_new(cnx, IO_UPDATE, INFINITE, buffer, size, update_query_callback, NULL);
+	free(buffer);
+	if(!cmd) {
+		UPDATE_DBG("Could NOT build update buffer for update!");
+		return 0;
+	}
+	
+	UPDATE_DBG("Update query was sent without problem!");
+	
+	return 1;
+}
+
+
+
+

@@ -88,11 +88,17 @@ struct event_object {
 } __attribute__((packed));
 
 struct event_ctx {
+	struct obj o;
+	struct collectible c;
+	
 	char *name;
 	struct collection *callbacks; /* event_callback */
 } __attribute__((packed));
 
 struct event_callback {
+	struct obj o;
+	struct collectible c;
+	
 	char *function;
 } __attribute__((packed));
 
@@ -108,7 +114,7 @@ struct signal_ctx *event_signal_get(const char *name, int create);
 
 int event_register(char *name, char *function);
 
-
+int event_raise(char *name, unsigned int param_count, struct event_parameter *params);
 
 
 

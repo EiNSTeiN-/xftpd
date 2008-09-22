@@ -64,6 +64,43 @@ static unsigned int proxy_external_ip = 0;
 /* traffic buffer size */
 static unsigned int proxy_buffer_size = 0;
 
+static struct collection *proxies;
+
+static void proxy_obj_destroy(struct proxy_connection *proxy) {
+	
+	collectible_destroy(proxy);
+
+	if(proxy->p) {
+		free(proxy->p);
+		proxy->p = NULL;
+	}
+
+	if(proxy->in.fd != -1) {
+		close_socket(proxy->in.fd);
+		socket_monitor_fd_closed(proxy->in.fd);
+		proxy->in.fd = -1;
+	}
+
+	if(proxy->out.fd != -1) {
+		close_socket(proxy->out.fd);
+		socket_monitor_fd_closed(proxy->out.fd);
+		proxy->out.fd = -1;
+	}
+
+	if(proxy->group) {
+		signal_clear(proxy->group);
+		collection_destroy(proxy->group);
+		proxy->group = NULL;
+	}
+
+	free(proxy->in.buffer);
+	free(proxy->out.buffer);
+	
+	free(proxy);
+
+	return;
+}
+
 struct proxy_connection *proxy_new(int fd) {
 	struct proxy_connection *proxy;
 
@@ -72,8 +109,11 @@ struct proxy_connection *proxy_new(int fd) {
 		PROXY_DBG("Memory error");
 		return NULL;
 	}
+	
+	obj_init(&proxy->o, proxy, (obj_f)proxy_obj_destroy);
+	collectible_init(proxy);
 
-	proxy->group = collection_new();
+	proxy->group = collection_new(C_CASCADE);
 	proxy->rd_packet_cb = NULL;
 
 	proxy->p = NULL;
@@ -94,38 +134,16 @@ struct proxy_connection *proxy_new(int fd) {
 	proxy->out.maxsize = proxy_buffer_size;
 	proxy->out.buffer = malloc(proxy_buffer_size);
 	proxy->out.shutdown = 0;
+	
+	collection_add(proxies, proxy);
 
 	return proxy;
 }
 
 void proxy_destroy(struct proxy_connection *proxy) {
 
-	signal_clear(proxy->group);
-	collection_destroy(proxy->group);
-	proxy->group = NULL;
-
-	if(proxy->p) {
-		free(proxy->p);
-		proxy->p = NULL;
-	}
-
-	if(proxy->in.fd != -1) {
-		close_socket(proxy->in.fd);
-		socket_monitor_fd_closed(proxy->in.fd);
-		proxy->in.fd = -1;
-	}
-
-	if(proxy->out.fd != -1) {
-		close_socket(proxy->out.fd);
-		socket_monitor_fd_closed(proxy->out.fd);
-		proxy->out.fd = -1;
-	}
-
-	free(proxy->in.buffer);
-	free(proxy->out.buffer);
-
-	free(proxy);
-
+	obj_destroy(&proxy->o);
+	
 	return;
 }
 
@@ -554,7 +572,6 @@ int main(int argc, char* argv[]) {
 #endif
 	struct collection *listen_signals;
 	int listen_fd = -1;
-	struct collection *proxies;
 
 	unsigned int listening = 1;
 
@@ -613,8 +630,8 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	listen_signals = collection_new();
-	proxies = collection_new();
+	listen_signals = collection_new(C_CASCADE);
+	proxies = collection_new(C_CASCADE);
 
 	listen_fd = create_listening_socket(proxy_port);
 	if(listen_fd == -1) {
@@ -632,6 +649,8 @@ int main(int argc, char* argv[]) {
 		//signal_poll();
 
 		socket_poll();
+		
+		collection_cleanup_iterators();
 
 		Sleep(PROXY_SLEEP_TIME);
 	}
@@ -645,11 +664,11 @@ int main(int argc, char* argv[]) {
 	close_socket(listen_fd);
 	socket_monitor_fd_closed(listen_fd);
 
-	while(collection_size(proxies)) {
+	/*while(collection_size(proxies)) {
 		void *first = collection_first(proxies);
 		proxy_destroy(first);
 		collection_delete(proxies, first);
-	}
+	}*/
 	collection_destroy(proxies);
 	
 	socket_free();

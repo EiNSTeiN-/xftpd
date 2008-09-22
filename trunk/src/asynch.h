@@ -56,8 +56,10 @@
 
 /* holds command data and response */
 struct slave_asynch_command {
-	unsigned long long int uid;
 	struct obj o;
+	struct collectible c;
+	
+	unsigned long long int uid; /* unique id of this command (packet->uid) */
 	
 	struct slave_connection *cnx;
 
@@ -71,7 +73,7 @@ struct slave_asynch_command {
 	void *param; /* arbitrary data passed to the callback */
 
 	/* describes the data to be sent */
-	unsigned int command; /* IO command type */
+	unsigned int command; /* IO command type (packet->type) */
 
 	unsigned int data_length;
 	char data[];
