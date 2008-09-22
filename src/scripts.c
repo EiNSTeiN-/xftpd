@@ -93,7 +93,7 @@ unsigned int scripts_loadall() {
 			errmsg = lua_tostring(L, -1);
 			
 			SCRIPTS_DBG("error catched:");
-			SCRIPTS_DBG("  --> while loading: ", file);
+			SCRIPTS_DBG("  --> while loading: %s", file);
 			SCRIPTS_DBG("  --> error value: %s", errval);
 			SCRIPTS_DBG("  --> error message: %s", errmsg);
 			
@@ -119,7 +119,7 @@ unsigned int scripts_loadall() {
 			errmsg = lua_tostring(L, -1);
 			
 			SCRIPTS_DBG("error catched:");
-			SCRIPTS_DBG("  --> while loading: ", file);
+			SCRIPTS_DBG("  --> while executing: %s", file);
 			SCRIPTS_DBG("  --> error value: %s", errval);
 			SCRIPTS_DBG("  --> error message: %s", errmsg);
 			

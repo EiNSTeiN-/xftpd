@@ -36,7 +36,7 @@
 #include <windows.h>
 
 #include "luainit.h"
-//#include "lua-5.1.1/src/lstate.h"
+#include "collection.h"
 
 lua_State* L = NULL;
 
@@ -101,38 +101,36 @@ int luainit_garbagecollect() {
 	
 	return 1;
 }
-/*
-unsigned int luainit_gcobjectcount(GCObject *gco) {
-	unsigned int count = 0;
-	GCObject *next;
-	
-	next = gco;
-	while(next) {
-		count++;
-		next = next->gch.next;
-	}
-	
-	return count;
-}
 
-int luainit_dumpstate(char *file) {
-	struct lua_State *dL = (struct lua_State *)L;
-	unsigned int i;
-	
-	logging_write(file, "dumping lua state ...\n");
-	logging_write(file, "openupval: %u\n", luainit_gcobjectcount(dL->openupval));
-	logging_write(file, "gclist: %u\n", luainit_gcobjectcount(dL->gclist));
-	
-	logging_write(file, "rootgc: %u\n", luainit_gcobjectcount(dL->l_G->rootgc));
-	logging_write(file, "gray: %u\n", luainit_gcobjectcount(dL->l_G->gray));
-	logging_write(file, "grayagain: %u\n", luainit_gcobjectcount(dL->l_G->grayagain));
-	logging_write(file, "weak: %u\n", luainit_gcobjectcount(dL->l_G->weak));
-	logging_write(file, "totalbytes: %u\n", dL->l_G->totalbytes);
-	logging_write(file, "estimate: %u\n", dL->l_G->estimate);
-	logging_write(file, "gcdept: %u\n", dL->l_G->gcdept);
-	logging_write(file, "size_ci: %u\n", dL->size_ci);
-	logging_write(file, "stacksize: %u\n", dL->stacksize);
-	
-	return 1;
+/* function: collection_lua_next */
+#ifdef TOLUA_DISABLE_tolua_xFTPd_bind_collection_iterate00
+int tolua_xFTPd_bind_collection_iterate00(lua_State* tolua_S)
+{
+/*#ifndef TOLUA_RELEASE
+ tolua_Error tolua_err;
+ if (
+     !tolua_isusertype(tolua_S,1,"_collection",0,&tolua_err) ||
+     !tolua_isusertype(tolua_S,2,"collection_iterator",0,&tolua_err) ||
+     !tolua_isstring(tolua_S,3,0,&tolua_err) ||
+     !tolua_isnoobj(tolua_S,4,&tolua_err)
+ )
+  goto tolua_lerror;
+ else
+#endif*/
+ {
+  struct collection* c = ((struct collection*)  tolua_tousertype(tolua_S,1,0));
+  struct collection_iterator* iter = ((struct collection_iterator*)  tolua_tousertype(tolua_S,2,0));
+  const char* type = ((const char*)  tolua_tostring(tolua_S,3,0));
+  {
+   struct collectible* tolua_ret = (struct collectible*)  collection_next(c, iter);
+   tolua_pushusertype(L,(void*)tolua_ret, type);
+  }
+ }
+ return 1;
+/*#ifndef TOLUA_RELEASE
+ tolua_lerror:
+ tolua_error(tolua_S,"#ferror in function 'iterate'.",&tolua_err);
+ return 0;
+#endif*/
 }
-*/
+#endif //#ifdef TOLUA_DISABLE

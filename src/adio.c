@@ -82,7 +82,7 @@ struct adio_file *adio_open(const char *filename, int create) {
 	);
 	
 	if(adio->s == INVALID_HANDLE_VALUE) {
-		ADIO_DBG("Failed to CreateFile(%s, %u); GLE is %u", filename, create, GetLastError());
+		ADIO_DBG("Failed to CreateFile(%s, %u); GLE is %u", filename, (int)create, (int)GetLastError());
 		free(adio);
 		return NULL;
 	} else {
@@ -149,7 +149,7 @@ struct adio_operation *adio_read(struct adio_file *file, char *buffer, unsigned 
 	
 	success = ReadFile(file->s, op->buffer, op->length, NULL, &op->ov);
 	if(!success && (GetLastError() != ERROR_IO_PENDING)) {
-		ADIO_DBG("Failed to ReadFile(); GLE is %u", GetLastError());
+		ADIO_DBG("Failed to ReadFile(); GLE is %u", (int)GetLastError());
 		CloseHandle(op->ov.hEvent);
 		free(op);
 		return NULL;
@@ -218,7 +218,7 @@ struct adio_operation *adio_write(struct adio_file *file, char *buffer, unsigned
 	
 	success = WriteFile(file->s, op->buffer, op->length, NULL, &op->ov);
 	if(!success && (GetLastError() != ERROR_IO_PENDING)) {
-		ADIO_DBG("Failed to WriteFile(); GLE is %u", GetLastError());
+		ADIO_DBG("Failed to WriteFile(); GLE is %u", (int)GetLastError());
 		CloseHandle(op->ov.hEvent);
 		free(op);
 		return NULL;
@@ -258,7 +258,7 @@ int adio_probe(struct adio_operation *op, unsigned int *ready) {
 	/* Check if the operation completed yet */
 	success = GetOverlappedResult(op->file->s, &op->ov, (void*)&length_done, FALSE);
 	if(!success && /*(GetLastError() != ERROR_IO_PENDING) &&*/ (GetLastError() != ERROR_IO_INCOMPLETE)) {
-		ADIO_DBG("could not get overlapped results; GLE is %u", GetLastError());
+		ADIO_DBG("could not get overlapped results; GLE is %u", (int)GetLastError());
 		return -1;
 	}
 	

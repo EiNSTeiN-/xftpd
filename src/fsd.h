@@ -64,6 +64,7 @@
 #endif
 
 #include "collection.h"
+#include "secure.h"
 
 struct slave_main_ctx {
 	char slave_is_dead; /* is the slave dead ? */
@@ -98,6 +99,12 @@ struct slave_xfer {
 	char passive; /* 1 on passive (listening) connections */
 	char upload; /* 0 on downloads */
 	unsigned long long int restart; /* where to restart the file transfer */
+	
+	char use_secure; /* use ssl for data connection ? */
+	char secure_server; /* is the slave the server end for ssl/tls negotiation ? */
+	struct secure_ctx secure;
+	char *secure_resume_buf;
+	int secure_resume_len;
 
 	char completed; /* Operation completed. */
 	char connected; /* connected (socket init is done) */

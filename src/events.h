@@ -117,6 +117,7 @@ int event_register(char *name, char *function);
 int event_raise(char *name, unsigned int param_count, struct event_parameter *params);
 
 unsigned int event_onReload();
+unsigned int event_onPreReload();
 
 /* user operations */
 void event_onNewUser(struct user_ctx *user);

@@ -46,27 +46,32 @@
 #include "signal.h"
 #include "obj.h"
 
-unsigned long long int socket_current = 0;
+//unsigned long long int socket_current = 0;
 
-void socket_init()
-{
-
+int socket_init() {
 	SOCKET_DBG("Socket set size is %u", FD_SETSIZE);
 
 	WORD wVersionRequested = MAKEWORD(2, 2);
 	WSADATA wsaData;
 
 	WSAStartup(wVersionRequested, &wsaData);
+	
+	/*
+		my dumb compiler, won't find those two
+		for the libraries unless I reference
+		them in one of the executable's objects.
+	*/
+	WSASetLastError(WSAGetLastError());
 
-	return;
+	return 1;
 }
 
-void socket_free()
-{
+void socket_free() {
 	WSACleanup();
 	
 	return;
 }
+
 
 /* take addr wich is something like localhost:3456 and return localhost in host and 3456 int port */
 unsigned int socket_split_addr(const char *addr, char **host, unsigned short *port) {
@@ -186,7 +191,7 @@ int connect_to_ip_non_blocking(unsigned int ip, short port) {
 	/* enable SO_LINGER */
 	socket_linger(s, 0);
 
-	socket_current++;
+	//socket_current++;
 
 	return s;
 }
@@ -217,7 +222,7 @@ int connect_to_ip(unsigned int ip, short port) {
 	/* enable SO_LINGER */
 	socket_linger(s, 0);
 
-	socket_current++;
+	//socket_current++;
 
 	return s;
 }
@@ -273,7 +278,7 @@ int create_listening_socket(short int port)
 	}
 	listen(s, 200); // SOMAXCONN
 
-	socket_current++;
+	//socket_current++;
 
 	return s;
 }
@@ -288,11 +293,11 @@ void close_socket(int fd)
 		if(closesocket(fd)) {
 			SOCKET_DBG("closesocket() failed. Gle: %u", WSAGetLastError());
 		}
-		if(socket_current) {
+		/*if(socket_current) {
 			socket_current--;
 		} else {
 			SOCKET_DBG("closesocket() unbalanced!");
-		}
+		}*/
 	}
 
 	return;

@@ -117,7 +117,7 @@
 	All items in the collections are in
 	doubly-linked lists.
 */
-struct collection_list { /* 8 */
+struct collection_list {
 	struct collection_list *prev;
 	struct collection_list *next;
 } __attribute__((packed));
@@ -126,7 +126,7 @@ struct collection_list { /* 8 */
 	A counted list keep track of how many items
 	there is in the collection_list
 */
-struct collection_counted_list { /* 12 */
+struct collection_counted_list {
 	struct collection_list list;
 	unsigned int count;
 } __attribute__((packed));
@@ -137,7 +137,7 @@ struct collection_counted_list { /* 12 */
 	iterators are garbage collected once every cycle.
 */
 typedef struct collection_iterator collection_iterator;
-struct collection_iterator { /* 8+8+4 */
+struct collection_iterator {
 	struct collection_list all_iterators; /* linked to the global iterator lists. */
 	
 	struct collection_list iterators; /* linked to the parent collection.iterators list */
@@ -163,9 +163,9 @@ typedef enum {
 	Base holder for all collectibles
 */
 typedef struct collection _collection;
-struct collection { // 26?
+struct collection {
 	
-	struct obj o; /* 13+4+1+12 */
+	struct obj o;
 	collection_destroy_type destroy_type;
 	
 	/* 1 if the collection is void (no new items are allowed) */
@@ -180,7 +180,7 @@ struct collection { // 26?
 	A collectible_instance is created every time a collectible
 	is added to a collection.
 */
-struct collectible_instance { /* 13+8+4+4+8 */
+struct collectible_instance {
 	struct obj o;
 	
 	struct collection_list collectors; /* linked to the parent collectible.collectors list */
@@ -198,7 +198,7 @@ struct collectible_instance { /* 13+8+4+4+8 */
 	with the parent host structre's object as 'self'
 */
 typedef struct collectible collectible;
-struct collectible { /* 13+8+1+4 */
+struct collectible {
 	struct obj o;
 
 	struct collection_counted_list collectors; /* head of instance.collectors list */
@@ -242,11 +242,11 @@ int chk_collection_void(struct collection *c);
 	C_CHECKED(chk_collection_void(a)); \
 }
 
-/* callback iterators */
+/* callback iterators stuff */
 int collection_iterate(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param);
 void *collection_match(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param);
 
-/* non-callback iterators */
+/* non-callback iterators stuff */
 int collection_cleanup_iterators();
 struct collection_iterator *collection_new_iterator(struct collection *c);
 void *collection_next(struct collection *c, struct collection_iterator *iter);

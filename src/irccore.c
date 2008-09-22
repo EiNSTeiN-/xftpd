@@ -33,7 +33,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include <windows.h>
 #include <stdio.h>
 #include <poll.h>
@@ -52,6 +51,7 @@
 #include "signal.h"
 #include "main.h"
 #include "events.h"
+#include "blowfish.h"
 
 
 /* for now, there's support for only one server */
@@ -215,10 +215,30 @@ unsigned int irc_say(struct irc_server *server, char *channel_name, char *fmt, .
 	channel = get_channel(server, channel_name);
 
 	if(channel) {
-		/* enqueue the message in the channel list */
-		if(!enqueue_message(channel->queue, "PRIVMSG %s :%s\n", channel->name, str)) {
-			free(str);
-			return 0;
+		if(channel->use_blowfish) {
+			char *enc_message;
+			
+			/* encrypt the blowfish message */
+			enc_message = blowfish_encrypt(&channel->blowfish, str);
+			if(!enc_message) {
+				IRC_DBG("memory error while encrypting blowfish message");
+				free(str);
+				return 1;
+			}
+			
+			/* enqueue the message in the channel list */
+			if(!enqueue_message(channel->queue, "PRIVMSG %s :+OK %s\n", channel->name, enc_message)) {
+				free(str);
+				return 0;
+			}
+			
+			free(enc_message);
+		} else {
+			/* enqueue the message in the channel list */
+			if(!enqueue_message(channel->queue, "PRIVMSG %s :%s\n", channel->name, str)) {
+				free(str);
+				return 0;
+			}
 		}
 	} else {
 		/* enqueue the message in the global list */
@@ -504,11 +524,37 @@ unsigned int irc_tree_add(struct collection *branches, char *trigger, char *hand
 	return 1;
 }
 
+static int irc_handler_command_do_handlers(char *message, void *param) {
+	struct collection *handlers;
+	struct {
+		struct irc_server *server;
+		char *sender;
+		char *target;
+		unsigned int notice;
+		char *args;
+	} *ctx = param;
+	
+	handlers = tree_get(irc_hooks, message, &ctx->args);
+	if(!handlers) {
+		IRC_DBG("No handler for command %s", message);
+		return 0;
+	}
+	
+	/* call all handlers found for that command */
+	collection_iterate(handlers, (collection_f)call_command_handlers, ctx);
+	
+	if(ctx->args) {
+		free(ctx->args);
+		ctx->args = NULL;
+	}
+	
+	return 1;
+}
+
 /* handle any command sent over irc */
 /* notice: 0 for PRIVMSG */
 /* target: nickname or channel */
 static unsigned int irc_handle_command(struct irc_server *server, char *sender, unsigned int notice, char *target, char *message) {
-	struct collection *handlers;
 	struct {
 		struct irc_server *server;
 		char *sender;
@@ -531,21 +577,54 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 	}
 
 	/* skip the command prefix */
-	if(strnicmp(message, irc_prefix, strlen(irc_prefix))) return 0;
-	message += strlen(irc_prefix);
-	
-	handlers = tree_get(irc_hooks, message, &ctx.args);
-	if(!handlers) {
-		IRC_DBG("No handler for command %s", message);
-		return 1;
+	if(!strnicmp(message, irc_prefix, strlen(irc_prefix))) {
+		message += strlen(irc_prefix);
+		
+		if(!irc_handler_command_do_handlers(message, &ctx)) {
+			if(*target != '#') free(ctx.target);
+			return 1;
+		}
+	} else if(!strnicmp(message, "+OK ", 4) || !strnicmp(message, "mcps ", 5)) {
+		struct irc_channel *channel;
+		
+		message = strchr(message, ' ')+1;
+		
+		if(!*message) {
+			if(*target != '#') free(ctx.target);
+			return 1;
+		}
+		
+		channel = get_channel(server, target);
+		if(channel && channel->use_blowfish) {
+			char *dec_message;
+			
+			dec_message = blowfish_decrypt(&channel->blowfish, message);
+			if(!dec_message) {
+				IRC_DBG("memory error when decrypting blowfish message");
+			} else {
+				if(!strnicmp(dec_message, irc_prefix, strlen(irc_prefix))) {
+					char *tmp = dec_message;
+					tmp += strlen(irc_prefix);
+					
+					if(!irc_handler_command_do_handlers(tmp, &ctx)) {
+						if(*target != '#') free(ctx.target);
+						memset(dec_message, 0, strlen(dec_message));
+						free(dec_message);
+						dec_message = NULL;
+						return 1;
+					}
+				}
+				
+				memset(dec_message, 0, strlen(dec_message));
+				free(dec_message);
+				dec_message = NULL;
+			}
+		} else {
+			IRC_DBG("Channel not found or channel not using blowfish (%s)", target);
+		}
 	}
-
-	/* call all handlers found for that command */
-	collection_iterate(handlers, (collection_f)call_command_handlers, &ctx);
-
+	
 	if(*target != '#') free(ctx.target);
-
-	if(ctx.args) free(ctx.args);
 
 	return 1;
 }
@@ -870,37 +949,43 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 
 /* return 0 if no line could be read & correctly parsed */
 static unsigned int parse_line_from_master(struct irc_server *server) {
-	unsigned int i;
-	int avail;
-
-	avail = socket_avail(server->s);
-
-	/* read byte to byte until we catch a \n
-		or until we read all available data */
-	for(i=0;i<avail;i++) {
-
-		if(recv(server->s, &server->buffer[server->filled_length], 1, 0) != 1) {
-			
+//	unsigned int i;
+	int /*avail,*/ recvd, tryagain;
+	
+	
+	while(1) {
+		tryagain = 0;
+		recvd = secure_recv(&server->secure, &server->buffer[server->filled_length], 1, &tryagain);
+		if((recvd == -1) && tryagain) {
+			IRC_DBG("Could NOT read a line (will try again!)");
+			break;
+		}
+		if((recvd == -1) && (WSAGetLastError() == WSAEWOULDBLOCK)) {
+			/* no more data available? */
+			IRC_DBG("No more data available to be read from socket, %u filled.", server->filled_length);
+			break;
+		}
+		if(recvd != 1) {
 			IRC_DBG("Could not receive from socket.");
 			return 0;
 		}
-
+		
 		if(server->buffer[server->filled_length] == 0) continue;
 		if(server->buffer[server->filled_length] == '\r') continue;
 		if(server->buffer[server->filled_length] == '\n') {
-
+			
 			/* parse the line and call the right handler */
 			server->buffer[server->filled_length] = 0;
-
+			
 			if(!irc_handle(server, server->buffer)) {
 				IRC_DBG("Could not handle command from server.");
 				return 0;
 			}
-
+			
 			server->filled_length = 0;
 			break;
 		}
-
+		
 		server->filled_length++;
 		if(server->filled_length == sizeof(server->buffer)) {
 			IRC_DBG("Server sent a line that is too big to be handled (over %u bytes).", sizeof(server->buffer));
@@ -922,9 +1007,17 @@ static int send_from_queue_callback(struct collection *c, struct ftpd_collectibl
 		struct collection *queue;
 	} *ctx = param;
 	unsigned int size = strlen(l->line);
+	int i, tryagain = 0;
 
-	if(send(ctx->server->s, l->line, size, 0) != size) {
-		IRC_DBG("ERROR: Line size mismatch sent size");
+	i = secure_send(&ctx->server->secure, l->line, size, &tryagain);
+	if((i == -1) && tryagain) {
+		IRC_DBG("Could NOT send the current line (will try again!)");
+		ctx->server->timestamp = time_now();
+		return 0;
+	}
+	
+	if(i != size) {
+		IRC_DBG("ERROR: Line size mismatch sent size (expected: %u, sent: %d)", size, i);
 		ctx->success = 0;
 	}
 
@@ -998,7 +1091,7 @@ static unsigned int send_from_channels(struct irc_server *server) {
 	return ctx.success;
 }
 
-int irccore_server_write(int fd, struct irc_server *server) {
+int irccore_server_secure_write(int fd, struct irc_server *server) {
 
 	if(!server->connected) {
 		unsigned int i;
@@ -1045,7 +1138,7 @@ int irccore_server_write(int fd, struct irc_server *server) {
 	return 1;
 }
 
-int irccore_server_read(int fd, struct irc_server *server) {
+int irccore_server_secure_read(int fd, struct irc_server *server) {
 
 	/* read a line & parse it */
 	if(!parse_line_from_master(server)) {
@@ -1057,13 +1150,33 @@ int irccore_server_read(int fd, struct irc_server *server) {
 	return 1;
 }
 
+int irccore_server_secure_connect(int fd, struct irc_server *server) {
+	
+	IRC_DBG("SSL Negotiation completed with success.");
+	
+	IRC_DBG("SSL Using Ciphers: %s", SSL_get_cipher_name(server->secure.ssl));
+	IRC_DBG("SSL Connection Protocol: %s", SSL_get_cipher_version(server->secure.ssl));
+	
+	return 1;
+}
+
+int irccore_server_secure_error(int fd, struct irc_server *server) {
+	
+	IRC_DBG("SSL Negotiation could not be completed!");
+	
+	return 1;
+}
 
 int irccore_load_config() {
-
 	unsigned int i;
-	char *name, *key, *groups, *group, *ptr;
+	char *name, *key, *groups, *group, *ptr, *blowfish_key;
 	char buffer[128];
 	struct irc_channel *channel;
+	
+	irccore_server.use_ssl = config_raw_read_int(MASTER_CONFIG_FILE, "xftpd.irc.ssl", 0);
+
+	/* try to get the ciphers list */
+	irccore_server.ssl_ciphers = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.ssl-ciphers", NULL);
 
 	/* if we can't read the hostname, disable the ircbot */
 	irccore_server.address = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.address", NULL);
@@ -1113,10 +1226,10 @@ int irccore_load_config() {
 
 		sprintf(buffer, "xftpd.irc.channel(%u).key", i);
 		key = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
-		/*if(!key) {
-			free(name);
-			break;
-		}*/
+
+		sprintf(buffer, "xftpd.irc.channel(%u).blowfish-key", i);
+		blowfish_key = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
+
 		sprintf(buffer, "xftpd.irc.channel(%u).groups", i);
 		groups = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
 
@@ -1131,6 +1244,16 @@ int irccore_load_config() {
 				}
 				irc_channel_add_group(channel, group);
 				group = ptr;
+			}
+			channel->use_blowfish = 0;
+			if(blowfish_key) {
+				if(!blowfish_init(&channel->blowfish, blowfish_key, strlen(blowfish_key))) {
+					IRC_DBG("Could not initialize blowfish key for channel %s", name);
+				} else {
+					channel->use_blowfish = 1;
+				}
+				free(blowfish_key);
+				blowfish_key = NULL;
 			}
 		}
 
@@ -1181,12 +1304,35 @@ int irccore_server_connect(int fd, struct irc_server *server) {
 	/* set the socket setting */
 	socket_set_max_read(fd, IRC_SOCKET_SIZE);
 	socket_set_max_write(fd, IRC_SOCKET_SIZE);
+	
+	secure_connect(&server->secure, fd);
 
+	/*
 	s = socket_monitor_signal_add(server->s, server->group, "socket-read", (signal_f)irccore_server_read, server);
 	signal_timeout(s, IRC_DATA_TIMEOUT, (timeout_f)irccore_server_read_timeout, server);
 	
 	s = socket_monitor_signal_add(server->s, server->group, "socket-write", (signal_f)irccore_server_write, server);
 	signal_timeout(s, IRC_DATA_TIMEOUT, (timeout_f)irccore_server_write_timeout, server);
+	*/
+	
+	s = secure_signal_add(&server->secure, server->group, "secure-read", (signal_f)irccore_server_secure_read, server);
+	signal_timeout(s, IRC_DATA_TIMEOUT, (timeout_f)irccore_server_read_timeout, server);
+	
+	s = secure_signal_add(&server->secure, server->group, "secure-write", (signal_f)irccore_server_secure_write, server);
+	signal_timeout(s, IRC_DATA_TIMEOUT, (timeout_f)irccore_server_write_timeout, server);
+	
+	s = secure_signal_add(&server->secure, server->group, "secure-resume-recv", (signal_f)irccore_server_secure_read, server);
+	s = secure_signal_add(&server->secure, server->group, "secure-resume-send", (signal_f)irccore_server_secure_write, server);
+	
+	s = secure_signal_add(&server->secure, server->group, "secure-connect", (signal_f)irccore_server_secure_connect, server);
+	s = secure_signal_add(&server->secure, server->group, "secure-error", (signal_f)irccore_server_secure_error, server);
+
+	/* if we should use ssl for this server, then start the negotiation right now */
+	if(server->use_ssl) {
+		IRC_DBG("Starting SSL Negotiation.");
+		secure_negotiate(&server->secure);
+		return 1;
+	}
 
 	return 1;
 }
@@ -1259,6 +1405,8 @@ void irc_disconnect(struct irc_server *server) {
 	collection_empty(server->queue);
 
 	signal_clear(server->group);
+	
+	secure_close(&server->secure);
 
 	/* close the socket, mark the server as not connected */
 	if(server->s != -1) {
@@ -1286,6 +1434,9 @@ int irccore_init() {
 	irccore_server.port = 0;
 	irccore_server.s = -1;
 	irccore_server.group = collection_new(C_CASCADE);
+	
+	irccore_server.use_ssl = 0;
+	irccore_server.ssl_ciphers = NULL;
 
 	irccore_server.nickname = NULL;
 	irccore_server.realname = NULL;
@@ -1301,6 +1452,11 @@ int irccore_init() {
 		IRC_DBG("THE IRC CONFIG COULD NOT BE LOADED, NO SITEBOT AVAILABLE.");
 		return 1;
 	}
+	
+	/* setup the secure context */
+	secure_setup(&irccore_server.secure,  SECURE_TYPE_CLIENT);
+	SSL_CTX_set_cipher_list(irccore_server.secure.ssl_ctx,
+		irccore_server.ssl_ciphers ? irccore_server.ssl_ciphers : "ALL");
 
 #ifdef MASTER_WITH_IRC_CLIENT
 	if(!irc_connect(&irccore_server)) {

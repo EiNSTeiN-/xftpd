@@ -33,7 +33,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include <windows.h>
 #include <stdio.h>
 #include <time.h>
@@ -65,6 +64,7 @@
 #include "nuke.h"
 #include "service.h"
 #include "slaveselection.h"
+#include "secure.h"
 
 
 unsigned long long int init_time = 0;
@@ -132,8 +132,18 @@ int main(int argc, char* argv[]) {
 
 	init_time = time_now();
 
-	socket_init();
-	crypto_init();
+	if(!socket_init()) {
+		MAIN_DBG("Could not initialize \"socket\" module");
+		return 1;
+	}
+	if(!crypto_init()) {
+		MAIN_DBG("Could not initialize \"crypt\" module");
+		return 1;
+	}
+	if(!secure_init()) {
+		MAIN_DBG("Could not initialize \"secure\" module");
+		return 1;
+	}
 	if(!slaves_init()) {
 		MAIN_DBG("Could not initialize \"slaves\" module");
 		return 1;
@@ -208,6 +218,8 @@ int main(int argc, char* argv[]) {
 		
 		socket_poll();
 		
+		secure_poll();
+		
 		slaves_dump_fileslog();
 		
 		config_poll();
@@ -225,6 +237,7 @@ int main(int argc, char* argv[]) {
 		if(main_ctx.reload) {
 			
 			MAIN_DBG("Reloading ...");
+			event_onPreReload();
 			
 			if(!ftpd_reload()) {
 				MAIN_DBG("Could not reload \"ftpd\" module");
@@ -260,7 +273,6 @@ int main(int argc, char* argv[]) {
 			
 			nuke_reload();
 			
-			MAIN_DBG("Calling the reload event ...");
 			/* fire the onReload event */
 			event_onReload();
 			MAIN_DBG("Reload is complete.");
@@ -288,6 +300,7 @@ int main(int argc, char* argv[]) {
 	users_free();
 	vfs_free();
 	slaves_free();
+	secure_free();
 	crypto_free();
 	socket_free();
 	

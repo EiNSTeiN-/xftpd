@@ -40,7 +40,7 @@
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_SLAVES
-//#  define DEBUG_SLAVES_DIALOG /* mostly connection dialog (flood) */
+#  define DEBUG_SLAVES_DIALOG /* mostly connection dialog (flood) */
 #endif
 
 #ifdef DEBUG_SLAVES

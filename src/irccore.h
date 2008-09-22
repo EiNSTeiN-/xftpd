@@ -37,6 +37,8 @@
 #define __IRCCORE_H
 
 #include "constants.h"
+#include "blowfish.h"
+#include "secure.h"
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_IRC
@@ -118,6 +120,10 @@ struct irc_channel {
 	// TODO: blowfish key
 
 	struct collection *queue; /* message queue */
+	
+	/* blowfish state */
+	int use_blowfish;
+	struct bf_state blowfish;
 } __attribute__((packed));
 
 struct irc_ctx;
@@ -125,8 +131,6 @@ struct irc_ctx;
 typedef struct irc_server irc_server;
 struct irc_server {
 	//struct obj o;
-	
-	//struct irc_ctx *irc_ctx;
 
 	char connected;
 
@@ -137,6 +141,10 @@ struct irc_server {
 	
 	struct collection *group;
 	int s;
+	
+	int use_ssl;
+	char *ssl_ciphers;
+	struct secure_ctx secure;
 
 	char *nickname;
 	char *realname;

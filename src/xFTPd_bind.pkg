@@ -36,6 +36,7 @@
 // include all the files that export
 // code to be binded to lua
 $#include "constants.h"
+$#include "luainit.h"
 
 module xFTPd {
 	const char *VERSION_NUMBER;

@@ -170,7 +170,7 @@ static unsigned int timeout_call_callback(struct collection *c, struct timeout_c
 			//luainit_garbagecollect();
 			return 1;
 		}
-
+		
 		err = lua_pcall(L, 0, 1, 0);
 		if(err) {
 			/*

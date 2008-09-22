@@ -1290,6 +1290,129 @@ unsigned int make_deletelog_query(struct slave_connection *cnx) {
 
 	return 1;
 }
+static unsigned int sslcert_pkey_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
+
+	if(!p) {
+		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		return 0;
+	}
+	
+	if(p->type != IO_CERTIFICATE_PKEY) {
+		SLAVES_DBG("%I64u: Non-IO_CERTIFICATE_PKEY type received. Slave does NOT support ssl !?", p->uid);
+		/* we won't fail here, the slave will just not be able to send/receive anything */
+	}
+	
+	SLAVES_DIALOG_DBG("%I64u: SSL Certificate PKEY response received.", p->uid);
+	
+	/* send the ssl certificate's private key */
+	if(!make_deletelog_query(cnx)) {
+		SLAVES_DBG("%I64u: Could not make deletelog query", p->uid);
+		return 0;
+	}
+
+	return 1;
+}
+
+/* export and sent the ssl certificate into BER-encoded format */
+unsigned int make_sslcert_pkey_query(struct slave_connection *cnx) {
+	struct slave_asynch_command *cmd;
+	char *buffer;
+	unsigned char *tmp;
+	int len;
+	
+	len = i2d_PrivateKey(ftpd_certificate_key, NULL);
+	if(len < 0) {
+		SLAVES_DBG("Unable to get ssl certificate pkey length");
+		
+		/* send delete log query */
+		if(!make_deletelog_query(cnx)) {
+			SLAVES_DBG("Could not make deletelog query");
+			return 0;
+		}
+		
+		return 1;
+	}
+	buffer = malloc(len);
+	
+	if(!buffer) {
+		SLAVES_DBG("Memory error");
+		return 0;
+	}
+	
+	tmp = buffer;
+	i2d_PrivateKey(ftpd_certificate_key, &tmp);
+
+	/* make only one delete query on the first pass. */
+	cmd = asynch_new(cnx, IO_CERTIFICATE_PKEY, MASTER_ASYNCH_TIMEOUT, buffer, len, sslcert_pkey_query_callback, NULL);
+	free(buffer);
+	if(!cmd) return 0;
+
+	SLAVES_DIALOG_DBG("%I64u: SSL Certificate PKEY query built", cmd->uid);
+
+	return 1;
+}
+
+static unsigned int sslcert_x509_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
+
+	if(!p) {
+		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		return 0;
+	}
+	
+	if(p->type != IO_CERTIFICATE_x509) {
+		SLAVES_DBG("%I64u: Non-IO_CERTIFICATE_x509 type received. Slave does NOT support ssl !?", p->uid);
+		/* we won't fail here, the slave will just not be able to send/receive anything */
+	}
+	
+	SLAVES_DIALOG_DBG("%I64u: SSL Certificate x509 response received.", p->uid);
+	
+	/* send the ssl certificate's private key */
+	if(!make_sslcert_pkey_query(cnx)) {
+		SLAVES_DBG("%I64u: Could not make ssl certificate pkey query", p->uid);
+		return 0;
+	}
+
+	return 1;
+}
+
+/* export and sent the ssl certificate into BER-encoded format */
+unsigned int make_sslcert_x509_query(struct slave_connection *cnx) {
+	struct slave_asynch_command *cmd;
+	char *buffer;
+	unsigned char *tmp;
+	int len;
+	
+	len = i2d_X509(ftpd_certificate_file, NULL);
+	if(len < 0) {
+		SLAVES_DBG("Unable to get ssl certificate x509 length");
+		
+		/* send delete log query */
+		if(!make_deletelog_query(cnx)) {
+			SLAVES_DBG("Could not make deletelog query");
+			return 0;
+		}
+		
+		return 1;
+	}
+	buffer = malloc(len);
+	
+	if(!buffer) {
+		SLAVES_DBG("Memory error");
+		return 0;
+	}
+	
+	tmp = buffer;
+	i2d_X509(ftpd_certificate_file, &tmp);
+
+	/* make only one delete query on the first pass. */
+	cmd = asynch_new(cnx, IO_CERTIFICATE_x509, MASTER_ASYNCH_TIMEOUT, buffer, len, sslcert_x509_query_callback, NULL);
+	free(buffer);
+	if(!cmd) return 0;
+
+	SLAVES_DIALOG_DBG("%I64u: SSL Certificate x509 query built", cmd->uid);
+
+	return 1;
+}
 
 /* p is NULL on timeout and on read error */
 static unsigned int hello_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
@@ -1357,11 +1480,22 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 	/* link the connection with its slave */
 	slave->cnx = cnx;
 	cnx->slave = slave;
-
-	/* empty the delete log */
-	if(!make_deletelog_query(cnx)) {
-		SLAVES_DBG("%I64u: Could not make deletelog query", p->uid);
-		return 0;
+	
+	if(ftpd_certificate_file && ftpd_certificate_key) {
+		/* send the ssl certificate to the slave so it can send/receive stuff to clients */
+		/* the slave may not support it, but it'll reply with FAILURE and it'll still be safe to continue */
+		if(!make_sslcert_x509_query(cnx)) {
+			SLAVES_DBG("%I64u: Could not make ssl certificate x509 query", p->uid);
+			return 0;
+		}
+	} else {
+		/* no cert or key set? proceed with deletelog then ... */
+		
+		/* send delete log query */
+		if(!make_deletelog_query(cnx)) {
+			SLAVES_DBG("%I64u: Could not make deletelog query", p->uid);
+			return 0;
+		}
 	}
 
 	return 1;
@@ -2134,7 +2268,7 @@ int slaves_connect(int fd, void *param) {
 
 		return 0;
 	}
-	socket_current++;
+	//socket_current++;
 	
 	/* enable linger so we'll perform hard abort on closesocket() */
 	socket_linger(new_fd, 0);
