@@ -103,10 +103,12 @@ typedef struct {
 	char *hostname;
 } irc_quit;
 
-
 module irc {
 	extern _collection *irc_hooks @ hooks;
 	extern irc_server irccore_server @ server;
+
+	int irc_connect @ connect(irc_server *server);
+	void irc_disconnect @ disconnect(irc_server *server);
 
 	unsigned int irc_channel_add @ join(irc_server *server, char *name, char *key);
 

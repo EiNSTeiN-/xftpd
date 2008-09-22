@@ -111,7 +111,7 @@ struct socket_monitor {
 	struct signal_ctx *error_signal;
 } __attribute__((packed));
 
-void socket_init();
+int socket_init();
 void socket_free();
 
 /* Socket constructors/destructors */

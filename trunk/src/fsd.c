@@ -107,6 +107,12 @@ static unsigned int fsd_delete_incomplete_uploads = SLAVE_DELETE_INCOMPLETE_UPLO
 
 static struct collection *xfer_monitored_adio = NULL;
 
+/* contain the ssl certificate x509 */
+static X509 *certificate_file = NULL;
+
+/* contain the ssl certificate private key */
+static EVP_PKEY *certificate_key = NULL;
+
 /* return 0 if the current_disk is not valid */
 static int rotate_disks() {
 
@@ -144,7 +150,7 @@ int _stat64(
    struct __stat64 *buffer 
 );
 
-static void delete_xfer(struct slave_xfer *xfer);
+static void delete_xfer(struct slave_xfer *xfer, int error);
 	
 static void file_map_obj_destroy(struct file_map *file) {
 	
@@ -154,7 +160,7 @@ static void file_map_obj_destroy(struct file_map *file) {
 	if(file->xfers) {
 		while(collection_size(file->xfers)) {
 			struct slave_xfer *xfer = collection_first(file->xfers);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_FAILURE);
 			collection_delete(file->xfers, xfer);
 		}
 		collection_destroy(file->xfers);
@@ -1106,6 +1112,8 @@ static void xfer_obj_destroy(struct slave_xfer *xfer) {
 	
 	collectible_destroy(xfer);
 	
+	secure_destroy(&xfer->secure);
+	
 	if(xfer->group) {
 		signal_clear(xfer->group);
 		collection_destroy(xfer->group);
@@ -1184,7 +1192,7 @@ static void xfer_destroy(struct slave_xfer *xfer) {
 }
 
 /* xfer finished the wrong way */
-static void delete_xfer(struct slave_xfer *xfer) {
+static void delete_xfer(struct slave_xfer *xfer, int error) {
 	struct file_map *file;
 	unsigned int upload;
 	unsigned long long int asynch_uid;
@@ -1198,12 +1206,13 @@ static void delete_xfer(struct slave_xfer *xfer) {
 
 	if(upload && file && fsd_delete_incomplete_uploads) {
 		/* client was uploding, we shall remove the file */
+		SLAVE_DBG("Deleting file %s from disk because file was being uploaded.", file->name);
 		file_unmap(file);
 	}
 
 	/* send FAILURE to master */
 	if(asynch_uid != -1) {
-		enqueue_packet(asynch_uid, IO_FAILURE, NULL, 0);
+		enqueue_packet(asynch_uid, error, NULL, 0);
 	}
 
 	return;
@@ -1213,7 +1222,7 @@ static int xfer_destroy_uploading(struct collection *c, struct slave_xfer *xfer,
 	
 	if(xfer->upload && fsd_delete_incomplete_uploads) {
 		/* If the client was downloading we must delete the file because it is obviously not complete */
-		delete_xfer(xfer);
+		delete_xfer(xfer, IO_FAILURE);
 	}
 	
 	return 1;
@@ -1282,34 +1291,78 @@ int xfer_monitor_adio(struct slave_xfer *xfer) {
 	return 1;
 }
 
+int xfer_resume_recv(int fd, struct slave_xfer *xfer) {
+	int size;
+	int tryagain = 0;
+	
+	/* read the most data we can from the socket */
+	size = secure_recv(&xfer->secure, xfer->secure_resume_buf, xfer->secure_resume_len, &tryagain);
+	if(size == -1) {
+		/* need to resume again ? */
+		return tryagain;
+	}
+	
+	/* those will never happen because of the underlying socket system. */
+	if(size == 0) {
+		/* socket closed, connection complete */
+		SLAVE_DBG("%I64u: Socket closed. transfer complete? (should not have happened!)", xfer->uid);
+		//complete_xfer(xfer);
+		xfer_monitor_adio(xfer);
+		return 1;
+	}
+	if(size < 0) {
+		/* socket error */
+		SLAVE_DBG("%I64u: recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, xfer->secure_resume_len);
+		delete_xfer(xfer, IO_FAILURE);
+		return 1;
+	}
+	
+	/*if(size != xfer->secure_resume_len) {
+		SLAVE_DBG("%I64u: Was reaching for %u, only got %u bytes", xfer->uid, xfer->secure_resume_len, size);
+	}*/
+	
+	/* Update the checksum */
+	crc32_add(&xfer->checksum, xfer->secure_resume_buf, size);
+	
+	/* Update the operation pointer. */
+	xfer->op_pointer += size;
+	xfer->xfered += size;
+	xfer->file->size += size;
+	
+	xfer->secure_resume_buf = NULL;
+	xfer->secure_resume_len = 0;
+	
+	return 1;
+}
+
 int xfer_read(int fd, struct slave_xfer *xfer) {
 	unsigned int ret;
 	int size, avail;
 	unsigned int room;
 	int success = 1;
-	//unsigned long long int timediff;
-
-
+	
 	if(!xfer->proxy_connected) {
 
 		/* read the 'reply' packet */
+		/* it's OK to read packets here without using secure_recv as
+			we should because it always happens prior to ssl negotiation. */
 		ret = packet_read(fd, &xfer->reply, &xfer->filledsize);
 		if(!ret) {
 			if(!xfer->reply) {
 				/* should NEVER happen */
-				delete_xfer(xfer);
+				delete_xfer(xfer, IO_FAILURE);
 				return 0;
 			} else {
 				/* packet could not be entierly read */
 				return 1;
 			}
 		}
-
+		
 		if(ret && !xfer->reply) {
 			/* there was not enough data yet */
 			return 1;
 		}
-
+		
 		/* parse the packet */
 		if(xfer->passive && (xfer->reply->type == PROXY_LISTENING)) {
 			/*
@@ -1319,39 +1372,42 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 			*/
 			struct proxy_listening *listening = (struct proxy_listening *)&xfer->reply->data;			
 			struct slave_listen_reply data;
-
+			
+			SLAVE_DBG("Proxy sent LISTENING packet");
+			
 			xfer->ip = listening->ip;
-
+			
 			data.ip = xfer->ip;
 			data.port = xfer->port;
-
+			
 			/* tell the master we're listening right now */
 			if(!enqueue_packet(xfer->listen_uid, IO_SLAVE_LISTENING, &data, sizeof(data))) {
 				xfer_destroy(xfer);
 				return 0;
 			}
 		}
-
+		
 		else if(!xfer->passive && (xfer->reply->type == PROXY_CONNECTED)) {
 			/*
 				we are operating in active mode here,
-				the proxy must send us a "connected" packet
+				the proxy sent us its mandatory "connected" packet
 			*/
-
+			
+			SLAVE_DBG("Proxy sent CONNECTED packet");
+			
 			// nothing special to do here.
-
 		}
 		else {
 			/* the proxy sent us garbage */
-
+			
 			SLAVE_DBG("Proxy sent unrecognized data");
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_ERROR_PROXY_GARBAGE);
 			return 0;
 		}
-
+		
 		free(xfer->reply);
 		xfer->reply = NULL;
-
+		
 		xfer->proxy_connected = 1;
 		
 		return 1;
@@ -1361,43 +1417,24 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		//SLAVE_DBG("%I64u: File transfer is not yet ready (download)", xfer->uid);
 		return 1;
 	}
-
+	
+	/* check if we need to start the ssl negotiation. */
+	if(xfer->use_secure && !xfer->secure.use_secure) {
+		secure_type(&xfer->secure, xfer->secure_server ? SECURE_TYPE_SERVER : SECURE_TYPE_CLIENT);
+		if(!secure_negotiate(&xfer->secure)) {
+			delete_xfer(xfer, IO_ERROR_SSL_ERROR);
+			return 0;
+		}
+		return 1;
+	}
+	
 	if(!xfer->upload) {
 		// Not uploading, nothing to do here: remove the callback
 		signal_clear_with_filter(xfer->group, "socket-read", (void *)fd);
+		signal_clear_with_filter(xfer->group, "secure-read", (void *)fd);
 		return 1;
 	}
-/*
-	timediff = timer(xfer->speedcheck);
-	if(timediff > SPEEDCHECK_TIME) {
-		unsigned int speed;
-		unsigned int newsize;
-		int increase;
-
-		speed = (xfer->speedsize / (timediff / 1000));
-
-		newsize = speed + ((speed * 10) / 100) + 1;
-		if(newsize && (newsize > SPEEDCHECK_MINIMAL)) {
-
-			increase = ((newsize - xfer->lastsize) * 100) / newsize;
-			if(increase < 0) {
-				increase = -increase;
-			}
-
-			if(increase > SPEEDCHECK_THRESHOLD) {
-				SLAVE_DBG("(read) Speed for the last %u ms was %u bytes per second", SPEEDCHECK_TIME, speed);
-				SLAVE_DBG("(read) Setting new socket size to %u, last was: %u (change of %d%%)", newsize, xfer->lastsize, increase);
-				
-				xfer->speedsize = 0;
-				xfer->speedcheck = time_now();
-				xfer->lastsize = newsize;
-				
-				socket_set_max_read(fd, newsize);
-			}
-		}
-	}
-*/
-
+	
 	/*
 		The user is uploading. What we need to do is:
 			1. Check if there is still data that is being written to the file from the last
@@ -1410,7 +1447,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 				2. If it's the case, we'll move the data at the beginning of the buffer.
 				3. We will proceed to reading any data that is available from the socket
 				4. We'll start an adio operation to write this data to the disk.
-	
+		
 		From the moment the close request is issued by the peer, we'll have to:
 			1. Monitor the operation untill all the remaining data from the buffer is written to the disk.
 			2. Destroy this structure & the xfer as soon as it's done.
@@ -1423,7 +1460,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		if(success == -1) {
 			/* error while writing to file !? */
 			SLAVE_DBG("%I64u: adio_probe returned error.", xfer->uid);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 			return 0;
 		}
 		
@@ -1456,7 +1493,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 	/* Check if there's room for more data */
 	room = (xfer->buffersize - xfer->op_pointer);
 	if(!room && xfer->op_active) {
-		SLAVE_DBG("%I64u: Damn, the buffer is full! Skipping on %u bytes... (%I64u ms)", xfer->uid, socket_avail(fd), xfer->op ? timer(xfer->op->timestamp) : 0);
+		//SLAVE_DBG("%I64u: Damn, the buffer is full! Skipping on %u bytes... (%I64u ms)", xfer->uid, socket_avail(fd), xfer->op ? timer(xfer->op->timestamp) : 0);
 		
 		/* would be a very good idea to increase here */
 		
@@ -1467,16 +1504,29 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		it may happen that we do not have any room here
 		but we still need to start writing to make some
 	*/
-	if(room) {
+	if(room) do {
+		int tryagain = 0;
+		
 		/* get the number of bytes we'll read ... */
-		avail = socket_avail(fd);
+		/*avail = socket_avail(fd);
 		if(avail > room) {
 			avail = room;
-		}
+		}*/
+		
+		/* try to get as much as possible. */
+		avail = room;
 		
 		/* read the most data we can from the socket */
-		size = recv(fd, &xfer->buffer[xfer->op_pointer], avail, 0);
-		
+		size = secure_recv(&xfer->secure, &xfer->buffer[xfer->op_pointer], avail, &tryagain);
+		if(size == -1) {
+			if(tryagain) {
+				//SLAVE_DBG("%I64u: Failed to secure_recv() at once. will resume.", xfer->uid);
+				xfer->secure_resume_buf = &xfer->buffer[xfer->op_pointer];
+				xfer->secure_resume_len = avail;
+				return 1;
+			}
+			return 0;
+		}
 		/* those will never happen because of the underlying socket system. */
 		if(size == 0) {
 			/* socket closed, connection complete */
@@ -1488,13 +1538,14 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		if(size < 0) {
 			/* socket error */
 			SLAVE_DBG("%I64u: recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, avail);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_FAILURE);
 			return 1;
 		}
 		
+		/* too much flood
 		if(size != avail) {
 			SLAVE_DBG("%I64u: Was reaching for %u, only got %u bytes", xfer->uid, avail, size);
-		}
+		}*/
 		
 		/* Update the checksum */
 		crc32_add(&xfer->checksum, &xfer->buffer[xfer->op_pointer], size);
@@ -1503,7 +1554,10 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		xfer->op_pointer += size;
 		xfer->xfered += size;
 		xfer->file->size += size;
-	}
+		
+		room -= size;
+		
+	} while(room);
 	
 	/* If there is no operation currently started, start one now */
 	if(!xfer->op_active && xfer->op_pointer) {
@@ -1517,7 +1571,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 			xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
 			if(!xfer->op) {
 				SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
-				delete_xfer(xfer);
+				delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 				return 0;
 			}
 			//SLAVE_DBG("%I64u: Writing %u bytes to file at %u.", xfer->uid, xfer->op_length, xfer->restart);
@@ -1529,75 +1583,64 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		}
 	}
 	
-	//~ do {
-		//~ /* get the size available from the buffer */
-		
-		//~ /* read the most data we can from the socket */
-		//~ size = recv(fd, working_buffer, avail, 0);
-		
-		//~ /* those will never happen because of the socket system. */
-		//~ if(size == 0) {
-			//~ /* socket closed, connection complete */
-			//~ SLAVE_DBG("%I64u: Socket closed. transfer complete? (should not have happened!)", xfer->uid);
-			//~ complete_xfer(xfer);
-			//~ return 1;
-		//~ }
-		//~ if(size < 0) {
-			//~ /* socket error */
-			//~ SLAVE_DBG("%I64u: recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, avail);
-			//~ delete_xfer(xfer);
-			//~ return 1;
-		//~ }
-		
-		//~ crc32_add(&xfer->checksum, working_buffer, size);
-		
-		//~ _lseeki64(xfer->file->io.stream, xfer->restart, SEEK_SET);
-		
-		//~ /* write to file */
-		//~ if(_write(xfer->file->io.stream, working_buffer, size) != size) {
-			//~ /* write error */
-			//~ SLAVE_DBG("%I64u: _write() error on %s%s at %I64u", xfer->uid, xfer->file->disk->path,
-				//~ &xfer->file->name[1], _telli64(xfer->file->io.stream));
-			//~ delete_xfer(xfer);
-			//~ return 1;
-		//~ }
-		
-		//~ _commit(xfer->file->io.stream);
-		
-		//~ xfer->xfered += size;
-		//~ xfer->file->size += size;
-		//~ xfer->restart += size;
-		//~ xfer->speedsize += size;
-		
-		//~ /* try again 'til the buffer's empty */
-	//~ } while(socket_avail(fd));
-
 	//SLAVE_DBG("%I64u: %u bytes received.", xfer->uid, size);
 
+	return 1;
+}
+
+int xfer_resume_send(int fd, struct slave_xfer *xfer) {
+	int write_size;
+	int tryagain = 0;
+	
+	write_size = secure_send(&xfer->secure, xfer->secure_resume_buf, xfer->secure_resume_len, &tryagain);
+	if(write_size == -1) {
+		/* must resume again ? */
+		return tryagain;
+	}
+	
+	if(write_size <= 0) {
+		/* send error */
+		//SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
+		SLAVE_DBG("%I64u: send() error: %u wanted, %d done (connection reset?).", xfer->uid, xfer->secure_resume_len, write_size);
+		delete_xfer(xfer, IO_FAILURE);
+		return 1;
+	}
+	
+	if(write_size != xfer->secure_resume_len) {
+		SLAVE_DBG("%I64u: Was sending %u bytes, could only send %u bytes.", xfer->uid, xfer->secure_resume_len, write_size);
+	}
+	
+	crc32_add(&xfer->checksum, xfer->secure_resume_buf, write_size);
+	
+	xfer->op_pointer += write_size;
+	xfer->xfered += write_size;
+	
+	xfer->secure_resume_buf = NULL;
+	xfer->secure_resume_len = 0;
+	
 	return 1;
 }
 
 int xfer_write(int fd, struct slave_xfer *xfer) {
 	unsigned int rem_size, size;
 	int write_size;
-	//unsigned long long int timediff;
 	int success = 1;
 
 	if(!xfer->proxy_connected) {
-
 		/* write the 'query' packet */
+		/* it's OK to do send() here instead of secure_send() as we
+			should do, because it always happens before the negotiation. */
 		if(xfer->query) {
-
 			if(send(fd, (void*)xfer->query, xfer->query->size, 0) != xfer->query->size) {
 				SLAVE_DBG("%I64u: send() error while sending query to proxy.", xfer->uid);
-				delete_xfer(xfer);
+				delete_xfer(xfer, IO_FAILURE);
 				return 0;
 			}
-
+			
 			free(xfer->query);
 			xfer->query = NULL;
 		}
-
+		
 		return 1;
 	}
 	
@@ -1607,47 +1650,28 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		return 1;
 	}
 	
+	/* check if we need to start the ssl negotiation. */
+	if(xfer->use_secure && !xfer->secure.use_secure) {
+		secure_type(&xfer->secure, xfer->secure_server ? SECURE_TYPE_SERVER : SECURE_TYPE_CLIENT);
+		if(!secure_negotiate(&xfer->secure)) {
+			delete_xfer(xfer, IO_ERROR_SSL_ERROR);
+			return 0;
+		}
+		return 1;
+	}
+	
 	if(xfer->upload) {
 		// client's uploading, nothing to do here: remove the callback
-		signal_clear_with_filter(xfer->group, "socket-write", (void *)fd);
+		//signal_clear_with_filter(xfer->group, "socket-write", (void *)fd);
+		signal_clear_with_filter(xfer->group, "secure-write", (void *)fd);
 		return 1;
 	}
 	
 	if(xfer->restart > xfer->file->size) {
 		SLAVE_DBG("%I64u: CANNOT RESTART AFTER EOF", xfer->uid);
-		delete_xfer(xfer);
+		delete_xfer(xfer, IO_FAILURE);
 		return 0;
 	}
-
-	/*
-	timediff = timer(xfer->speedcheck);
-	if(timediff > SPEEDCHECK_TIME) {
-		unsigned int speed;
-		unsigned int newsize;
-		int increase;
-
-		speed = (xfer->speedsize / (timediff / 1000));
-
-		newsize = speed + ((speed * 10) / 100) + 1;
-		if(newsize && (newsize > SPEEDCHECK_MINIMAL)) {
-
-			increase = ((newsize - xfer->lastsize) * 100) / newsize;
-			if(increase < 0) {
-				increase = -increase;
-			}
-
-			if(increase > SPEEDCHECK_THRESHOLD) {
-				SLAVE_DBG("(write) Speed for the last %u ms was %u bytes per second", SPEEDCHECK_TIME, speed);
-				SLAVE_DBG("(write) Setting new socket size to %u, last was: %u (change of %d%%)", newsize, xfer->lastsize, increase);
-				
-				xfer->speedsize = 0;
-				xfer->speedcheck = time_now();
-				xfer->lastsize = newsize;
-				
-				socket_set_max_write(fd, newsize);
-			}
-		}
-	}*/
 
 	/*
 		The user is downloading, we need to send him stuff.
@@ -1660,7 +1684,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		success = adio_probe(xfer->op, &xfer->op_done);
 		if(success == -1) {
 			SLAVE_DBG("%I64u: adio probe returned an error", xfer->uid);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 			return 1;
 		}
 		
@@ -1669,13 +1693,6 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		}
 		
 		if(success == 1) {
-			//SLAVE_DBG("%I64u: adio probe returned operation complete with %u bytes (in %I64u ms)", xfer->uid, xfer->op_done, timer(xfer->op->timestamp));
-			//adio_complete(xfer->op);
-			//xfer->op = NULL;
-			//return 1;
-			//xfer->op_length = 0;
-			//xfer->op_done = 0;
-			//xfer->op_pointer = 0;
 			xfer->op_active = 0;
 		}
 	}
@@ -1702,20 +1719,30 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 	}
 
 	if(rem_size) {
+		int tryagain = 0;
 		/* there's data to send over the socket */
 		
-		write_size = send(fd, &xfer->buffer[xfer->op_pointer], rem_size, 0);
+		write_size = secure_send(&xfer->secure, &xfer->buffer[xfer->op_pointer], rem_size, &tryagain);
+		if(write_size == -1) {
+			if(tryagain) {
+				xfer->secure_resume_buf = &xfer->buffer[xfer->op_pointer];
+				xfer->secure_resume_len = rem_size;
+				return 1;
+			}
+			
+			return 0;
+		}
 		if(write_size <= 0) {
 			/* send error */
-			SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
+			//SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
 			SLAVE_DBG("%I64u: send() error: %u wanted, %d done (connection reset?).", xfer->uid, rem_size, write_size);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_FAILURE);
 			return 1;
 		}
 		
-		if(write_size != rem_size) {
+		/*if(write_size != rem_size) {
 			SLAVE_DBG("%I64u: Was sending %u bytes, could only send %u bytes.", xfer->uid, rem_size, write_size);
-		}
+		}*/
 		
 		crc32_add(&xfer->checksum, &xfer->buffer[xfer->op_pointer], write_size);
 		
@@ -1734,7 +1761,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 			xfer->op = adio_read(xfer->file->io.adio, xfer->buffer, xfer->restart, size, xfer->op);
 			if(!xfer->op) {
 				SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
-				delete_xfer(xfer);
+				delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 				return 0;
 			}
 			
@@ -1760,42 +1787,6 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 			}
 		}
 	}
-
-	//~ /* size remaining to be uploaded */
-	//~ rem_size = (unsigned int)(xfer->file->size - xfer->restart);
-
-	//~ size = xfer->buffersize;
-	//~ if(size > rem_size)
-		//~ size = rem_size;
-
-	//~ /* set the correct position in file */
-	//~ _lseeki64(xfer->file->io.stream, xfer->restart, SEEK_SET);
-
-	//~ /* read from file */
-	//~ read_size = _read(xfer->file->io.stream, working_buffer, size);
-	//~ if(read_size <= 0) {
-		//~ /* read error */
-		//~ SLAVE_DBG("%I64u: _read error on %s%s at %I64u for %u", xfer->uid, xfer->file->disk->path,
-			//~ xfer->file->name, _telli64(xfer->file->io.stream), size);
-		//~ delete_xfer(xfer);
-		//~ return 1;
-	//~ }
-	
-	//~ /* write to client */
-	//~ write_size = send(fd, working_buffer, read_size, 0);
-	//~ if(write_size <= 0) {
-		//~ /* send error */
-		//~ SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
-		//~ SLAVE_DBG("%I64u: send() error: %u wanted, %u done (connection reset?).", xfer->uid, read_size, write_size);
-		//~ delete_xfer(xfer);
-		//~ return 1;
-	//~ }
-
-	//~ crc32_add(&xfer->checksum, working_buffer, write_size);
-
-	//~ xfer->xfered += write_size;
-	//~ xfer->restart += write_size;
-	//~ xfer->speedsize += write_size;
 
 	return 1;
 }
@@ -1835,7 +1826,7 @@ static int xfer_adio_poll_callback(struct collection *c, struct slave_xfer *xfer
 		xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
 		if(!xfer->op) {
 			SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 			return 0;
 		}
 		
@@ -1887,7 +1878,17 @@ int xfer_error(int fd, struct slave_xfer *xfer) {
 	SLAVE_DBG("%I64u: Socket caused an error.", xfer->uid);
 
 	/* connection closed unexpectedly */
-	delete_xfer(xfer);
+	delete_xfer(xfer, IO_ERROR_CNX_ERROR);
+
+	return 1;
+}
+
+int xfer_secure_error(int fd, struct slave_xfer *xfer) {
+
+	SLAVE_DBG("%I64u: SSL Dialog caused an error.", xfer->uid);
+
+	/* connection closed unexpectedly */
+	delete_xfer(xfer, IO_ERROR_SSL_ERROR);
 
 	return 1;
 }
@@ -1905,7 +1906,7 @@ int xfer_read_timeout(struct slave_xfer *xfer) {
 	/*if(xfer->xfered) {
 		complete_xfer(xfer);
 	} else*/ {
-		delete_xfer(xfer);
+		delete_xfer(xfer, IO_ERROR_CNX_READ_TIMEOUT);
 	}
 	
 	return 1;
@@ -1920,7 +1921,7 @@ int xfer_write_timeout(struct slave_xfer *xfer) {
 	}
 
 	SLAVE_DBG("%I64u: Write timeout with %I64u bytes written.", xfer->uid, xfer->xfered);
-	delete_xfer(xfer);
+	delete_xfer(xfer, IO_ERROR_CNX_WRITE_TIMEOUT);
 	
 	return 1;
 }
@@ -1928,7 +1929,7 @@ int xfer_write_timeout(struct slave_xfer *xfer) {
 int xfer_connect_timeout(struct slave_xfer *xfer) {
 	
 	SLAVE_DBG("%I64u: Connect timeout.", xfer->uid);
-	delete_xfer(xfer);
+	delete_xfer(xfer, IO_ERROR_CNX_CONNECT_TIMEOUT);
 	
 	return 1;
 }
@@ -1988,13 +1989,13 @@ int xfer_connect(int fd, struct slave_xfer *xfer) {
 		xfer->fd = accept(fd, NULL, 0);
 		
 		signal_clear(xfer->group);
-
+		
 		socket_monitor_fd_closed(fd);
 		close_socket(fd);
-
+		
 		if(xfer->fd == -1) {
 			SLAVE_DBG("%I64u: Could not accept new connection.", xfer->uid);
-			delete_xfer(xfer);
+			delete_xfer(xfer, IO_FAILURE);
 			return 0;
 		}
 
@@ -2005,7 +2006,6 @@ int xfer_connect(int fd, struct slave_xfer *xfer) {
 		socket_monitor_new(xfer->fd, 1, 1);
 		socket_monitor_signal_add(xfer->fd, xfer->group, "socket-close", (signal_f)xfer_close, xfer);
 		socket_monitor_signal_add(xfer->fd, xfer->group, "socket-error", (signal_f)xfer_error, xfer);
-
 	} else {
 		SLAVE_DBG("%I64u: Active connection established", xfer->uid);
 		
@@ -2013,21 +2013,30 @@ int xfer_connect(int fd, struct slave_xfer *xfer) {
 		signal_clear_with_filter(xfer->group, "socket-connect", (void *)fd);
 	}
 	
+	secure_connect(&xfer->secure, xfer->fd);
+	
 	/* hook the "read" and "write" signals on the socket */
 	{
 		struct signal_callback *s;
 		
-		s = socket_monitor_signal_add(xfer->fd, xfer->group, "socket-read", (signal_f)xfer_read, xfer);
+		s = secure_signal_add(&xfer->secure, xfer->group, "secure-read", (signal_f)xfer_read, xfer);
 		signal_timeout(s, DATA_CONNECTION_TIMEOUT, (timeout_f)xfer_read_timeout, xfer);
+		s = secure_signal_add(&xfer->secure, xfer->group, "secure-resume-recv", (signal_f)xfer_resume_recv, xfer);
 		
-		s = socket_monitor_signal_add(xfer->fd, xfer->group, "socket-write", (signal_f)xfer_write, xfer);
+		s = secure_signal_add(&xfer->secure, xfer->group, "secure-write", (signal_f)xfer_write, xfer);
 		signal_timeout(s, DATA_CONNECTION_TIMEOUT, (timeout_f)xfer_write_timeout, xfer);
+		s = secure_signal_add(&xfer->secure, xfer->group, "secure-resume-send", (signal_f)xfer_resume_send, xfer);
+		
+		secure_signal_add(&xfer->secure, xfer->group, "secure-error", (signal_f)xfer_secure_error, xfer);
 	}
 
 	xfer->connected = 1;
 
 	if(xfer->ready) {
 		/*
+			if ready is set here, it means the transfer query
+			already arrived.
+			
 			if ready is not set here, we do not yet
 			have enough informations to setup the sockets
 		*/
@@ -2160,9 +2169,9 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 	if(use_pasv_proxy) {
 		struct proxy_listen listen;
 		xfer->listen_uid = p->uid;
-
+		
 		listen.port = xfer->port;
-
+		
 		/* enqueue the "listen" packet to the intention of the proxy */
 		xfer->query = packet_new(current_proxy_uid++, PROXY_LISTEN, &listen, sizeof(listen));
 		if(!xfer->query) {
@@ -2172,24 +2181,53 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 			return 1;
 		}
 	}
+	
+	/* setup the secure context */
+	secure_setup(&xfer->secure, SECURE_TYPE_AUTO);
+	
+	SSL_CTX_set_cipher_list(xfer->secure.ssl_ctx, "ALL");
+	
+	if(SSL_CTX_use_certificate(xfer->secure.ssl_ctx, certificate_file) != 1) {
+		SLAVE_DBG("Could not load certificate from file!");
+	}
+	if(SSL_CTX_use_PrivateKey(xfer->secure.ssl_ctx, certificate_key) != 1) {
+		SLAVE_DBG("Could not load rsa private key from file!");
+	}
 
 	return 1;
 }
 
 /* setup the xfer->file->io struct for the specified xfer */
-static unsigned int setup_file_io(struct slave_xfer *xfer) {
+static int setup_file_io(struct slave_xfer *xfer, int *error) {
+	struct __stat64 stats;
 	char *filename;
-
+	
 	/* check if the file is already open. */
 	if(xfer->file->io.refcount) {
 		if(xfer->file->io.upload != xfer->upload) {
 			/* client requesting to download a file that is
 				currently being uploaded */
 			SLAVE_DBG("%I64u: Client request for different operation than current", xfer->uid);
+				
 			return 0;
 		}
 	}
 	
+	/* verify that we can access the file both way */
+	filename = malloc(strlen(xfer->file->disk->path) + strlen(xfer->file->name) + 1);
+	if(!filename) {
+		SLAVE_DBG("Memory error");
+		return 0;
+	}
+	sprintf(filename, "%s%s", xfer->file->disk->path, xfer->file->name);
+
+	if(_stat64(filename, &stats) == -1) {
+		SLAVE_DBG("%I64u: Error getting stats on %s", xfer->uid, filename);
+	} else {
+		xfer->file->size = stats.st_size;
+		xfer->file->timestamp = (stats.st_mtime * 1000); /* timestamp need milliseconds resolution */
+	}
+
 	if(xfer->upload) {
 		xfer->buffersize = fsd_buffer_up;
 		xfer->buffer = malloc(fsd_buffer_up);
@@ -2200,19 +2238,12 @@ static unsigned int setup_file_io(struct slave_xfer *xfer) {
 	
 	if(!xfer->buffer) {
 		SLAVE_DBG("%I64u: Memory error", xfer->uid);
+		free(filename);
 		return 0;
 	}
 	
 	/* if the file was not already open, set it up */
 	if(!xfer->file->io.refcount) {
-
-		/* find the complete filename */
-		filename = malloc(strlen(xfer->file->disk->path) + strlen(xfer->file->name) + 1);
-		if(!filename) {
-			SLAVE_DBG("%I64u: Memory error", xfer->uid);
-			return 0;
-		}
-		sprintf(filename, "%s%s", xfer->file->disk->path, &xfer->file->name[1]);
 		
 		/* open the file */
 		if(xfer->upload) {
@@ -2227,15 +2258,19 @@ static unsigned int setup_file_io(struct slave_xfer *xfer) {
 		
 		if(!xfer->file->io.adio) {
 			SLAVE_DBG("%I64u: File %s could not be opened", xfer->uid, filename);
-
+			
+			if(error) *error = IO_ERROR_FILE_OPEN;
+			
 			free(filename);
 			return 0;
 		}
-		free(filename);
-
+		
 		/* file open & ready ! */
 		xfer->file->io.upload = xfer->upload;
 	}
+	
+	free(filename);
+	filename = NULL;
 	
 	/* signal that we're one more */
 	xfer->file->io.refcount++;
@@ -2253,13 +2288,13 @@ static unsigned int setup_file_io(struct slave_xfer *xfer) {
 				adio_close(xfer->file->io.adio);
 				xfer->file->io.adio = NULL;
 			}
+			
+			if(error) *error = IO_ERROR_FILE_READWRITE;
+			
 			return 0;
 		}
 		xfer->restart += xfer->op_length;
 		xfer->op_active = 1;
-	} else  {
-		/* we can't start writing to the file just now ... */
-		//xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->buffersize, xfer->op);
 	}
 	
 	return 1;
@@ -2393,7 +2428,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		
 		socket_monitor_signal_add(xfer->fd, xfer->group, "socket-close", (signal_f)xfer_close, xfer);
 		socket_monitor_signal_add(xfer->fd, xfer->group, "socket-error", (signal_f)xfer_error, xfer);
-
+		
 		if(use_data_proxy) {
 			struct proxy_connect connect;
 			
@@ -2408,6 +2443,18 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 				if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 				return 1;
 			}
+		}
+		
+		/* setup the secure context */
+		secure_setup(&xfer->secure, SECURE_TYPE_AUTO);
+		
+		SSL_CTX_set_cipher_list(xfer->secure.ssl_ctx, "ALL");
+		
+		if(SSL_CTX_use_certificate(xfer->secure.ssl_ctx, certificate_file) != 1) {
+			SLAVE_DBG("Could not load certificate from file!");
+		}
+		if(SSL_CTX_use_PrivateKey(xfer->secure.ssl_ctx, certificate_key) != 1) {
+			SLAVE_DBG("Could not load rsa private key from file!");
 		}
 	}
 
@@ -2427,6 +2474,9 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 	xfer->op_done = 0;
 	xfer->op_pointer = 0;
 	xfer->op_active = 0;
+	
+	xfer->use_secure = req->use_secure;
+	xfer->secure_server = req->secure_server;
 
 	xfer->ready = 1;
 
@@ -2434,6 +2484,10 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		/*
 			if connected is not set here, we do not yet
 			have enough informations to setup the sockets
+			
+			if connected is indeed set, then we are most
+			probably processing a listening connection
+			and the client is already connected to it.
 		*/
 		xfer_setup_socket(xfer);
 	}
@@ -2448,7 +2502,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		if(!file) {
 			SLAVE_DBG("%I64u: Could not find requested file: %s", p->uid, req->filename);
 			xfer_destroy(xfer);
-			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
+			if(!enqueue_packet(p->uid, IO_ERROR_FILE_NOTFOUND, NULL, 0)) return 0;
 			return 1;
 		}
 	} else {
@@ -2456,7 +2510,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		if(!rotate_disks() || !current_disk) {
 			SLAVE_DBG("%I64u: Could not find next upload disk", p->uid);
 			xfer_destroy(xfer);
-			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
+			if(!enqueue_packet(p->uid, IO_ERROR_FILE_NODISK, NULL, 0)) return 0;
 			return 1;
 		}
 		current_disk->current_files++;
@@ -2492,15 +2546,16 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 
 	/* link the file to this xfer */
 	xfer->file = file;
-
-	if(!setup_file_io(xfer)) {
-		SLAVE_DBG("%I64u: Failed to setup file i/o", p->uid);
-		xfer->file = NULL;
-		xfer_destroy(xfer);
-		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
-		return 1;
+	{
+		int error;
+		if(!setup_file_io(xfer, &error)) {
+			SLAVE_DBG("%I64u: Failed to setup file i/o", p->uid);
+			xfer->file = NULL;
+			xfer_destroy(xfer);
+			if(!enqueue_packet(p->uid, error, NULL, 0)) return 0;
+			return 1;
+		}
 	}
-	
 	SLAVE_DIALOG_DBG("%I64u: Transfer setup completed", p->uid);
 
 	return 1;
@@ -2529,6 +2584,58 @@ static unsigned int process_slave_delete(struct io_context *io, struct packet *p
 	if(!enqueue_packet(p->uid, IO_DELETED, NULL, 0))
 		return 0;
 
+	return 1;
+}
+
+static unsigned int process_slave_sslcert_pkey(struct io_context *io, struct packet *p) {
+	unsigned char *buffer, *tmp;
+	int len;
+	
+	SLAVE_DIALOG_DBG("%I64u: SSL Certificate pkey query received", p->uid);
+	
+	/* Something to setup buf and len */
+	buffer = (char *)&p->data;
+	len = packet_data_length(p);
+	
+	tmp = buffer;
+	certificate_key = d2i_PrivateKey(EVP_PKEY_RSA, NULL, (const unsigned char **)&tmp, len);
+	
+	if(!certificate_key) {
+		SLAVE_DIALOG_DBG("%I64u: SSL Certificate pkey could not be imported!", p->uid);
+		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
+		
+		return 1;
+	}
+	
+	if(!enqueue_packet(p->uid, IO_CERTIFICATE_PKEY, NULL, 0))
+		return 0;
+	
+	return 1;
+}
+
+static unsigned int process_slave_sslcert_x509(struct io_context *io, struct packet *p) {
+	unsigned char *buffer, *tmp;
+	int len;
+	
+	SLAVE_DIALOG_DBG("%I64u: SSL Certificate x509 query received", p->uid);
+	
+	/* Something to setup buf and len */
+	buffer = (char *)&p->data;
+	len = packet_data_length(p);
+	
+	tmp = buffer;
+	certificate_file = d2i_X509(NULL, (const unsigned char **)&tmp, len);
+	
+	if(!certificate_file) {
+		SLAVE_DIALOG_DBG("%I64u: SSL Certificate x509 could not be imported!", p->uid);
+		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
+		
+		return 1;
+	}
+	
+	if(!enqueue_packet(p->uid, IO_CERTIFICATE_x509, NULL, 0))
+		return 0;
+	
 	return 1;
 }
 
@@ -2588,6 +2695,8 @@ static unsigned int process_slave_deletelog(struct io_context *io, struct packet
 	return 1;
 }
 
+
+
 /* dispatch the input from the master
 	to the correct handler */
 static unsigned int handle_inputs(struct io_context *io) {
@@ -2641,6 +2750,12 @@ static unsigned int handle_inputs(struct io_context *io) {
 		break;
 	case IO_UPDATE: /* reply with FAILURE or the same type */
 		ret = process_slave_update(io, p);
+		break;
+	case IO_CERTIFICATE_x509: /* reply with FAILURE or the same type */
+		ret = process_slave_sslcert_x509(io, p);
+		break;
+	case IO_CERTIFICATE_PKEY: /* reply with FAILURE or the same type */
+		ret = process_slave_sslcert_pkey(io, p);
 		break;
 	default:
 		ret = reply_failure(io, p);
@@ -3409,6 +3524,7 @@ int main(int argc, char* argv[]) {
 
 	crypto_init();
 	socket_init();
+	secure_init();
 
 	mapped_disks = collection_new(C_CASCADE);
 
@@ -3512,6 +3628,7 @@ int main(int argc, char* argv[]) {
 	
 	collection_destroy(xfer_monitored_adio);
 
+	secure_free();
 	socket_free();
 	crypto_free();
 

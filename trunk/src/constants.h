@@ -63,9 +63,13 @@
 #define SLAVE_SILENT_CRASH
 #define PROXY_SILENT_CRASH
 
-/* Defines sleep time in ms for each executables */
+/*
+	Defines sleep time in ms for each executables.
+	This is the time the executable will spend in the sleep()
+	function at each cycle.
+*/
 #define MASTER_SLEEP_TIME		10
-#define SLAVE_SLEEP_TIME		10
+#define SLAVE_SLEEP_TIME		50
 #define PROXY_SLEEP_TIME		10
 
 /* compile with irc client activated */
@@ -74,30 +78,31 @@
 /* Defines whether to grow the file sizes as they are being transfered or not */
 #define GROW_FILE_SIZES_ON_TRANSFER
 
-/* Activate/desactivate mirrors */
-//#define NO_MIRRORS
-
-/* The timestamp after wich the server will stop working */
-//#define FTPD_STOP_WORKING_TIMESTAMP		1172379600LLU 			//0.1b (02 / 25 / 2007)
-//#define FTPD_STOP_WORKING_TIMESTAMP		1174798800LLU 			//0.2b (02 / 25 / 2007)
-
 /* Remove the irc advertisement "powered by ..." */
-//#define NO_IRC_ADVERTISEMENT
+#define NO_IRC_ADVERTISEMENT
 
 /* The official version number */
-#define VERSION_NUMBER	"0.3b"
+#define VERSION_NUMBER	"0.4"
 
 #define SLAVE_PLATFORM_CURRENT			SLAVE_PLATFORM_WIN32
 
 /* The slave's revision number */
 #define SLAVE_UPDATE_FILENAME_PATTERN	"xftpd_update%I64u.exe"
-#define SLAVE_REVISION_NUMBER			12LLU
+
+/*
+	Revision log:
+		>= 14	ssl certificate is sent when a slave connect
+*/
+#define SLAVE_REVISION_NUMBER			19LLU // 0.4 = 19
 
 /**********************************************/
 /**********************************************/
 /*********** default values & config */
 
+#define MASTER_DEFAULT_CERTIFICATE_FILENAME		"xFTPd.pem"
+#define MASTER_DEFAULT_PRIVATE_KEY_FILENAME		"xFTPd.key"
 
+/* */
 #define MASTER_CONFIG_FILE		"xFTPd.conf"
 #define SLAVE_CONFIG_FILE		"slave.conf"
 #define PROXY_CONFIG_FILE		"proxy.conf"
@@ -132,10 +137,10 @@
 #define SLAVE_MASTER_SOCKET_SIZE	(256 * 1024) /* 256 kb */
 
 /* timeout for data connection */
-#define DATA_CONNECTION_TIMEOUT		(60 * 1000) /* 40 seconds */
+#define DATA_CONNECTION_TIMEOUT		(10 * 1000) /* 10 seconds */
 
 /* timeout for irc connection */
-#define IRC_DATA_TIMEOUT		(20 * 60 * 1000) /* 20 minutes */
+#define IRC_DATA_TIMEOUT		(30 * 60 * 1000) /* 20 minutes */
 
 /* irc socket buffer size */
 #define IRC_SOCKET_SIZE			(16 * 1024) /* 16 kb */

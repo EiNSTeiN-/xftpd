@@ -439,7 +439,7 @@ char *crypto_cipher_encrypt(BF_KEY *schedule, void *data, unsigned int data_leng
 	unsigned char *buffer;
 	unsigned int num = 0;
 
-	/* 64 bits initialization vector: must be the same on client and backdoor side */
+	/* 64 bits initialization vector: must be the same on client side */
 	unsigned long long int ivec = 0xdeadbeefbaadf00dLL;
 
 	(*retsize) = 0;

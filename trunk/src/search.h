@@ -33,45 +33,53 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __TREE_H
-#define __TREE_H
+#ifndef __SEARCH_H
+#define __SEARCH_H
 
 #include "constants.h"
-#include "obj.h"
-#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
-//#  define DEBUG_TREE
+#  define DEBUG_SEARCH
 #endif
 
-#ifdef DEBUG_TREE
+#ifdef DEBUG_SEARCH
 # ifdef FTPD_DEBUG_TO_CONSOLE
-#  define TREE_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+#  define SEARCH_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
 # else
-#  define TREE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+#  include "logging.h"
+#  define SEARCH_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
 # endif
 #else
-#  define TREE_DBG(format, arg...)
+#  define SEARCH_DBG(format, arg...)
 #endif
 
-struct branch {
-	struct obj o;
-	struct collectible c;
+#include "collection.h"
+#include "vfs.h"
 
-	/* name of this level */
-	char *name;
+enum search_type {
+	SEARCH_TYPE_FILE,
+	SEARCH_TYPE_FOLDER,
+	SEARCH_TYPE_BOTH,
+};
 
-	/* lua functions chain */
-	struct collection *handlers;
+/*
+	This function will iterate the whole vfs from the given point
+	and return a collection of files or folders matching the name.
 
-	/* childs for this level */
-	struct collection *branches;
-} __attribute__((packed));
+	The search is done case-insensively, and it get the whole match.
+*/
+struct collection *search_plain(struct vfs_element *root, const char *name, int type);
 
-typedef int (*tree_f)(void *a, void *b);
+/* Same as above, but the search is done using a wildcarded pattern */
+struct collection *search_wild(struct vfs_element *root, const char *name, int type);
 
-unsigned int tree_add(struct collection *branches, char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b));
-struct collection *tree_get(struct collection *branches, char *trigger, char **args);
-unsigned int tree_destroy(struct collection *branches);
+/* Return the intersecting elements between the two collections */
+struct collection *search_intersect(struct collection *a, struct collection *b);
 
-#endif /* __TREE_H */
+/*
+	Iterate the whole vfs from the given point, and call a lua function
+	with the corresponding parameter.
+*/
+int search_iterate(struct vfs_element *root, const char *function, void *param);
+
+#endif /* __SEARCH_H */

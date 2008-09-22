@@ -33,6 +33,41 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * Copyright (c) 2007, The xFTPd Project.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *
+ *     * Neither the name of the xFTPd Project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ *     * Redistributions of this project or parts of this project in any form
+ *       must retain the following aknowledgment:
+ *       "This product includes software developed by the xFTPd Project.
+ *        http://www.xftpd.com/ - http://www.xftpd.org/"
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE xFTPd PROJECT ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE xFTPd PROJECT BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #ifndef __FTPD_H
 #define __FTPD_H
 
@@ -41,6 +76,7 @@
 #include "collection.h"
 #include "vfs.h"
 #include "users.h"
+#include "secure.h"
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_FTPD
@@ -68,6 +104,12 @@
 #endif
 
 extern struct collection *clients;
+
+/* ssl certificate */
+extern X509 *ftpd_certificate_file;
+
+/* ssl certificate's key */
+extern EVP_PKEY *ftpd_certificate_key;
 
 typedef enum {
 	/* rfc-959 commands */
@@ -115,38 +157,54 @@ typedef enum {
 
 	/* distributed pasv: http://www.drftpd.org/index.php/Distributed_PASV */
 	CMD_PRE_TRANSFER,
+	
+	/* auth ftp ssl draft: http://curl.haxx.se/rfc/draft-murray-auth-ftp-ssl-16.txt */
+	CMD_AUTHENTICATE, /* AUTH SSL - AUTH TLS - AUTH TLS-C */
+	CMD_PROTECTION, /* PROT */
+	CMD_PROTECTION_BUFFER_SIZE, /* PBSZ */
+	CMD_CLEAR_COMMAND_CHANNEL, /* CCC */
+	
+	/* http://www.raidenftpd.com/kb/kb000000037.htm */
+	CMD_SET_SECURE_CLIENT_NEGOTIATION,
 
 	/* other commands */
 	CMD_NONE,
 	CMD_UNKNOWN
 } ftpd_command;
 
-
 typedef enum {
-	TYPE_ASCII,
-	TYPE_IMAGE
+	FTPD_TYPE_ASCII,
+	FTPD_TYPE_IMAGE
 } ftpd_type;
 
 typedef enum {
-	STRUCTURE_FILE,
-	STRUCTURE_RECORD/*,
-	STRUCTURE_PAGE*/
+	FTPD_STRUCTURE_FILE,
+	FTPD_STRUCTURE_RECORD/*,
+	FTPD_STRUCTURE_PAGE*/
 } ftpd_structure;
 
 typedef enum {
-	MODE_STREAM,
-	MODE_BLOCK,
-	MODE_COMPRESSED
+	FTPD_MODE_STREAM,
+	FTPD_MODE_BLOCK,
+	FTPD_MODE_COMPRESSED
 } ftpd_mode;
+
+typedef enum {
+	FTPD_PROTECTION_PRIVATE,
+	FTPD_PROTECTION_CLEAR,
+} ftpd_protection;
+
+typedef enum {
+	FTPD_AUTH_NONE,
+	FTPD_AUTH_SSL_OR_TLS,
+} ftpd_auth;
 
 struct ftpd_collectible_line {
 	struct obj o;
 	struct collectible c;
-
-	char line[];
 	
+	char line[];
 } __attribute__((packed));
-
 
 struct ftpd_collectible_line *ftpd_line_new(char *line);
 void ftpd_line_destroy(struct ftpd_collectible_line *l);
@@ -160,11 +218,12 @@ struct slave_transfer_request {
 	
 	unsigned int ip; /* needed for active connections */
 	unsigned short port; /* needed for active connections */
-	char upload; /* 0 on downloads */
-	char passive; /* 0 for active transfers */
+	char upload; /* 0 on downloads, 1 on uploads */
+	char passive; /* 0 for active transfers, 1 for passive transfers */
 	unsigned long long int restart; /* restart point */
 	
-	/* TODO: handle transfer modes/structure types/etc */
+	char use_secure; /* use ssl for data connection ? */
+	char secure_server; /* is the slave the server end for ssl/tls negotiation ? */
 	
 	char filename[1];
 } __attribute__((packed));
@@ -199,6 +258,11 @@ struct list_ctx {
 	struct collection *group;
 
 	struct collection *data;	/* collection of strings */
+		
+	char *resume_buffer;
+	unsigned int resume_length;
+	
+	struct secure_ctx secure;
 } __attribute__((packed));
 
 typedef struct ftpd_client_ctx ftpd_client;
@@ -227,6 +291,11 @@ struct ftpd_client_ctx {
 	unsigned int buffersize;	/* max size */
 	unsigned int filledsize;	/* filled length of the buffer */
 	char *iobuf;				/* working buffer for the control socket */
+	char readchr;				/* OpenSSL needs read/write to be retried
+									with the exact same parameters each time,
+									so we use this char and move it to the
+									bigger buffer. please rewrite it, it's
+									all but efficient. */
 
 	struct collection *messages; /* messages to be sent to the client */
 
@@ -234,7 +303,19 @@ struct ftpd_client_ctx {
 	ftpd_type type;				/* data representation type */
 	ftpd_structure structure;	/* data structure type */
 	ftpd_mode mode;				/* data transfer mode */
+	ftpd_auth auth;				/* authentication type */
+	ftpd_protection protection;	/* data protection */
+	
+	int secure_server;
+	
+	int ssl_waiting;			/* if this is set, the next time the message queue is 
+									empty a ssl negotiation will take place */
 
+	char *resume_buffer;
+	unsigned int resume_length;
+	
+	struct secure_ctx secure;
+	
 	char slave_xfer;			/* PRET has been issued for RETR/STOR */
 	char passive;				/* passive or active socket */
 	char ready;					/* ready to transfer or not */

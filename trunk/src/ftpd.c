@@ -88,12 +88,31 @@ int ftpd_fd = -1;
 
 struct collection *clients = NULL;
 
+/* ssl certificate */
+X509 *ftpd_certificate_file = NULL;
+
+/* ssl certificate's key */
+EVP_PKEY *ftpd_certificate_key = NULL;
+
 unsigned long long int ftpd_next_xfer_uid = 0;
+
+enum {
+	FTPD_SECURE_NEVER, /* allows only insecure connection. */
+	FTPD_SECURE_ALWAYS, /* allows only secure connection */
+	FTPD_SECURE_BOTH, /* allows both insecure and secure connection */
+	FTPD_SECURE_IMPLICIT, /* implicitly use of secure connection (only for control, not valid for data */
+};
+
+/* default config allows maximum flexibility */
+static int ftpd_secure_control_type = FTPD_SECURE_BOTH;
+static int ftpd_secure_data_type = FTPD_SECURE_BOTH;
+static int ftpd_secure_no_drop = 0; /* if 1, CCC cannot be used to drop a secure connection */
 
 static ftpd_command ftpd_client_text_to_command(char *buffer, unsigned int len) {
 
 	if(len < 3) return CMD_UNKNOWN;
 	if(!strnicmp(buffer, "PWD", 3)) return CMD_PRINT_WORKING_DIRECTORY;
+	if(!strnicmp(buffer, "CCC", 3)) return CMD_CLEAR_COMMAND_CHANNEL;
 
 	if(len < 4) return CMD_UNKNOWN;
 	if(!strnicmp(buffer, "QUIT", 4)) return CMD_QUIT;
@@ -112,6 +131,7 @@ static ftpd_command ftpd_client_text_to_command(char *buffer, unsigned int len) 
 	if(!strnicmp(buffer, "HELP", 4)) return CMD_HELP;
 	if(!strnicmp(buffer, "NOOP", 4)) return CMD_NO_OPERATION;
 	if(!strnicmp(buffer, "STOU", 4)) return CMD_STORE_UNIQUE;
+	if(!strnicmp(buffer, "SSCN", 4)) return CMD_SET_SECURE_CLIENT_NEGOTIATION;
 
 	if(len < 5) return CMD_UNKNOWN;
 	if(!strnicmp(buffer, "USER ", 5)) return CMD_USERNAME;
@@ -134,6 +154,9 @@ static ftpd_command ftpd_client_text_to_command(char *buffer, unsigned int len) 
 	if(!strnicmp(buffer, "SITE ", 5)) return CMD_SITE;
 	if(!strnicmp(buffer, "SIZE ", 5)) return CMD_SIZE_OF_FILE;
 	if(!strnicmp(buffer, "PRET ", 5)) return CMD_PRE_TRANSFER;
+	if(!strnicmp(buffer, "PROT ", 5)) return CMD_PROTECTION;
+	if(!strnicmp(buffer, "PBSZ ", 5)) return CMD_PROTECTION_BUFFER_SIZE;
+	if(!strnicmp(buffer, "AUTH ", 5)) return CMD_AUTHENTICATE;
 
 	/*
 		Special case of "ABOR" that FlashFXP send. Looks like: ÿôÿòÿABOR
@@ -274,8 +297,165 @@ static unsigned int ftpd_client_text_enqueue(struct collection *c, char *format,
 /* parse any inputs from a new client that is not logged */
 static unsigned int ftpd_client_parse_unlogged_input(struct ftpd_client_ctx *client, ftpd_command *command, char *ptr) {
 	char *Pointer;
-
+	
+	Pointer = strchr(ptr, ' ');
+	if(Pointer) Pointer++;
+	
+	/* always use secure connection */
+	if((ftpd_secure_control_type == FTPD_SECURE_ALWAYS) && (client->auth == FTPD_AUTH_NONE) && (*command != CMD_AUTHENTICATE)) {
+		ftpd_client_text_enqueue(client->messages,
+			"530 Please configure your client to use a secure connection and try again.\n"
+		);
+		return 1;
+	}
+	
+	if(client->ssl_waiting) {
+		ftpd_client_text_enqueue(client->messages,
+			"530 Still waiting for SSL Negotiation ...\n"
+		);
+		return 1;
+	}
+	
 	switch(*command) {
+	case CMD_AUTHENTICATE:
+		FTPD_DIALOG_DBG("[%08x] CMD_AUTHENTICATE (%s)", (int)client, Pointer);
+		
+		/* do not accept AUTH ? */
+		if(ftpd_secure_control_type == FTPD_SECURE_NEVER) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"421-You should have logged in.\n"
+				"421 Service not available, closing control connection.\n"
+			);
+			return 0;
+		}
+		if(ftpd_secure_control_type == FTPD_SECURE_IMPLICIT) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"503-You do not need to authenticate.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}
+		
+		/* already sent AUTH ? */
+		if(client->auth != FTPD_AUTH_NONE) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"503-You already sent AUTH.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			
+			return 1;
+		}
+		
+		client->auth = FTPD_AUTH_SSL_OR_TLS;
+		client->ssl_waiting = 1;
+		
+		ftpd_client_text_enqueue(client->messages, "234 Using secure connection.");
+		
+		return 1;
+	case CMD_PROTECTION_BUFFER_SIZE:
+		FTPD_DIALOG_DBG("[%08x] CMD_PROTECTION_BUFFER_SIZE (%s)", (int)client, Pointer);
+		
+		/* client cannot use this command without AUTH */
+		if(client->auth != FTPD_AUTH_SSL_OR_TLS) {
+			ftpd_client_text_enqueue(client->messages,
+				"503-You cannot use PBSZ before AUTH.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}
+		
+		if(!stricmp(Pointer, "0")) {
+			ftpd_client_text_enqueue(client->messages,
+				"200 Protection Buffer Size set to 0\n"
+			);
+		}
+		else {
+			ftpd_client_text_enqueue(client->messages,
+				"501 This server only accept \"PBSZ 0\"\n"
+			);
+		}
+		
+		return 1;
+	case CMD_PROTECTION:
+		FTPD_DIALOG_DBG("[%08x] CMD_PROTECTION (%s)", (int)client, Pointer);
+		
+		/*
+		PBSZ must be sent before PROT at any time, so it's wrong to check this here
+		if(client->last_command != CMD_PROTECTION_BUFFER_SIZE) {
+			ftpd_client_text_enqueue(client->messages,
+				"503-You must sent PBSZ before PROT.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}*/
+		
+		/* client cannot use this command without AUTH */
+		if(client->auth != FTPD_AUTH_SSL_OR_TLS) {
+			ftpd_client_text_enqueue(client->messages,
+				"503-You cannot use PROT before AUTH.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}
+		
+		/* set Private protection */
+		if(*Pointer == 'P') {
+			ftpd_client_text_enqueue(client->messages,
+				"200 Protection set to Private.\n"
+			);
+			client->protection = FTPD_PROTECTION_PRIVATE;
+		}
+		
+		/* set Clear protection */
+		else if(*Pointer == 'C') {
+			ftpd_client_text_enqueue(client->messages,
+				"200 Protection set to Clear.\n"
+			);
+			client->protection = FTPD_PROTECTION_CLEAR;
+		}
+		
+		else {
+			ftpd_client_text_enqueue(client->messages,
+				"501 Unknown protection type.\n"
+			);
+		}
+		
+		return 1;
+	case CMD_CLEAR_COMMAND_CHANNEL:
+		FTPD_DIALOG_DBG("[%08x] CMD_CLEAR_COMMAND_CHANNEL", (int)client);
+		
+		if(client->auth != FTPD_AUTH_SSL_OR_TLS) {
+			ftpd_client_text_enqueue(client->messages,
+				"533 Control connection is not protected.\n"
+			);
+			return 1;
+		}
+		
+		/* auth-only connections cannot be unprotected */
+		if((ftpd_secure_control_type == FTPD_SECURE_ALWAYS) || (ftpd_secure_control_type == FTPD_SECURE_IMPLICIT) || ftpd_secure_no_drop) {
+			ftpd_client_text_enqueue(client->messages,
+				"534 Control connection cannot be cleared.\n"
+			);
+			return 1;
+		}
+		
+		/*
+		ftpd_client_text_enqueue(client->messages,
+			"200 Command Channel Cleared.\n"
+		);
+		
+		client->auth = FTPD_AUTH_NONE;
+		client->ssl_waiting = 1;
+		*/
+		
+		ftpd_client_text_enqueue(client->messages,
+			"534 Control connection cannot be cleared.\n"
+		);
+		
+		return 1;
 	case CMD_USERNAME:
 /*		USER <SP> <username> <CRLF>
 		  230
@@ -288,13 +468,13 @@ static unsigned int ftpd_client_parse_unlogged_input(struct ftpd_client_ctx *cli
 		
 		FTPD_DIALOG_DBG("[%08x] CMD_USERNAME (%s)", (int)client, Pointer);
 
-		if(client->last_command != CMD_NONE) {
+		/*if(client->last_command != CMD_NONE) {
 			ftpd_client_text_enqueue(client->messages,
 				"421-Invalid USER command at this point.\n"
 				"421 Service not available, closing control connection.\n"
 			);
 			return 0;
-		}
+		}*/
 
 		strncpy(client->username, Pointer, sizeof(client->username)-1);
 
@@ -769,6 +949,8 @@ void ftpd_client_cleanup_data_connection(struct ftpd_client_ctx *client) {
 		client->xfer.element = NULL;
 	}
 
+	secure_close(&client->data_ctx.secure);
+
 	if(client->data_ctx.group) {
 		signal_clear(client->data_ctx.group);
 	}
@@ -908,10 +1090,28 @@ unsigned long long int ftpd_next_xfer() {
 	return ftpd_next_xfer_uid++;
 }
 
+struct slave_transfer_error_ctx {
+	int error;
+	char *message;
+} slave_transfer_errors[] = {
+	{ IO_FAILURE,					"The slave could not complete the transfer." },
+	{ IO_ERROR_FILE_OPEN,			"The slave could not open the file on disk." },
+	{ IO_ERROR_FILE_NOTFOUND,		"The slave could not find the file in its file list." },
+	{ IO_ERROR_FILE_NODISK,			"The slave could not find a disk to store the file." },
+	{ IO_ERROR_CNX_CONNECT_TIMEOUT, "Socket error while connecting (timed out)." },
+	{ IO_ERROR_CNX_WRITE_TIMEOUT,	"Socket error while sending data (timed out)." },
+	{ IO_ERROR_CNX_READ_TIMEOUT,	"Socket error while receiving data (timed out)." },
+	{ IO_ERROR_CNX_ERROR,			"Socket error with remote peer." },
+	{ IO_ERROR_SSL_ERROR,			"There was an error with the SSL negotiation." },
+	{ IO_ERROR_PROXY_GARBAGE,		"The negotiation phase with the proxy was unsuccessful" },
+};
+
+
 /* p is NULL on timeout and on read error */
 static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 	struct ftpd_client_ctx *client = (struct ftpd_client_ctx *)cmd->param;
 	struct slave_transfer_reply *reply;
+	unsigned int i;
 
 	/* unlink this command */
 	client->xfer.cmd = NULL;
@@ -921,7 +1121,7 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 
 	if(!p) {
 		/* the slave couldn't answer/timeout occured */
-		ftpd_client_text_enqueue(client->messages, "451 Requested action aborted.");
+		ftpd_client_text_enqueue(client->messages, "426 Requested action aborted.");
 
 		/* cleanup data connection */
 		ftpd_client_cleanup_data_connection(client);
@@ -929,26 +1129,21 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 	}
 
 	reply = (struct slave_transfer_reply *)&p->data;
-
-	if(p->type == IO_FAILURE) {
-		/* general failure status: slave couln't transfer the file */
-		
-		/* there are much more place where a failed download
-			may end up, but we call the onTransferFail callback
-			only when the slave explicitly reply with IO_FAILURE */
-		event_onTransferFail(client, &client->xfer);
-		
-		/* give its answer to the client */
-		ftpd_client_text_enqueue(client->messages,
-			"451-The slave could not complete the request.\n"
-			"451 Requested action aborted.\n"
-		);
-
-		/* cleanup data connection */
-		ftpd_client_cleanup_data_connection(client);
-		return 1;
+	
+	/* process the failure responses. */
+	for(i=0;i<sizeof(slave_transfer_errors) / sizeof(struct slave_transfer_error_ctx);i++) {
+		if(p->type == slave_transfer_errors[i].error) {
+			event_onTransferFail(client, &client->xfer);
+			ftpd_client_text_enqueue(client->messages,
+				"425-%s\n"
+				"425 Requested action aborted.\n",
+				slave_transfer_errors[i].message
+			);
+			ftpd_client_cleanup_data_connection(client);
+			return 1;
+		}
 	}
-
+	
 	if(!client->xfer.element) {
 
 		FTPD_DBG("ERROR: NO ELEMENT");
@@ -964,7 +1159,7 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 			/* protocol error */
 			
 			ftpd_client_text_enqueue(client->messages,
-				"451 Requested action aborted. Unknown protocol error.\n"
+				"425 Requested action aborted. Unknown protocol error.\n"
 			);
 
 			/* cleanup data connection */
@@ -993,8 +1188,8 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 
 		if(!event_onTransferSuccess(client, &client->xfer)) {
 			ftpd_client_text_enqueue(client->messages,
-				"451-Transfer rejected by external policy (file will be deleted).\n"
-				"451 Requested action aborted.");
+				"425-Transfer rejected by external policy (file will be deleted).\n"
+				"425 Requested action aborted.");
 			ftpd_wipe(client->xfer.element);
 			client->xfer.element = NULL;
 			ftpd_client_cleanup_data_connection(client);
@@ -1032,13 +1227,21 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 
 	/* protocol error */
 	ftpd_client_text_enqueue(client->messages,
-		"451-Unknown protocol error.\n"
-		"451 Requested action aborted.\n"
+		"425-Unknown protocol error.\n"
+		"425 Requested action aborted.\n"
 	);
 
 	/* cleanup data connection */
 	ftpd_client_cleanup_data_connection(client);
 	return 0;
+}
+
+int ftpd_secure_transfer(struct slave_transfer_request *data, char secure_server) {
+	
+	data->use_secure = 1;
+	data->secure_server = secure_server;
+	
+	return 1;
 }
 
 struct slave_transfer_request *ftpd_transfer(
@@ -1073,6 +1276,9 @@ struct slave_transfer_request *ftpd_transfer(
 		free(filename);
 		return NULL;
 	}
+	
+	data->use_secure = 0;
+	data->secure_server = 0;
 
 	data->xfer_uid = uid;
 	data->ip = ip;
@@ -1099,6 +1305,10 @@ static unsigned int make_slave_transfer_query(struct ftpd_client_ctx *client) {
 	data = ftpd_transfer(client->xfer.uid, client->xfer.cnx->slave->vroot, client->xfer.element,
 		client->ip, client->port, client->passive, client->xfer.upload, client->xfer.restart, &length);
 	if(!data) return 0;
+	
+	if(client->protection == FTPD_PROTECTION_PRIVATE) {
+		ftpd_secure_transfer(data, client->secure_server /* slave is the server-side for the ssl negotiation */);
+	}
 
 	cmd = asynch_new(client->xfer.cnx, IO_SLAVE_TRANSFER, INFINITE, (void*)data, length, slave_transfer_query_callback, client);
 	free(data);
@@ -1278,6 +1488,31 @@ int get_data_length(struct collection *c, struct ftpd_collectible_line *l, unsig
 	return 1;
 }
 
+int ftpd_client_data_resume_send(int fd, struct ftpd_client_ctx *client) {
+	int tryagain;
+	int i;
+	
+	tryagain = 0;
+	i = secure_send(&client->data_ctx.secure, client->data_ctx.resume_buffer,
+		client->data_ctx.resume_length, &tryagain);
+	if((i == -1) && tryagain) {
+		/* will resume next time! */
+		FTPD_DBG("SSL Re-Negotiation during data transfer !");
+		return 1;
+	}
+	free(client->data_ctx.resume_buffer);
+	client->data_ctx.resume_buffer = NULL;
+
+	/* shutdown the socket and wait for the graceful disconnection */
+	shutdown(fd, SD_SEND);
+
+	/* clear this callback because we're finished */
+	signal_clear_with_filter(client->data_ctx.group, "secure-write", (void *)fd);
+	signal_clear_with_filter(client->data_ctx.group, "secure-resume-send", (void *)fd);
+
+	return 1;
+}
+
 int ftpd_client_data_write(int fd, struct ftpd_client_ctx *client) {
 	struct {
 		char *buffer;
@@ -1298,24 +1533,18 @@ int ftpd_client_data_write(int fd, struct ftpd_client_ctx *client) {
 
 	ctx.buffer = malloc(length);
 	if(!ctx.buffer) {
-		FTPD_DBG("Memory error (%u)", length);
+		FTPD_DBG("Memory error with %u bytes", length);
 		return 0;
 	}
 	memset(ctx.buffer, 0, length);
 
 	collection_iterate(client->data_ctx.data, (collection_f)build_data_for_client, &ctx);
 
-	send(fd, ctx.buffer, strlen(ctx.buffer), 0);
-	free(ctx.buffer);
-	ctx.buffer = NULL;
-
-	/* shutdown the socket and wait for the graceful disconnection */
-	shutdown(fd, SD_SEND);
-
-	/* clear this callback because we're finished */
-	signal_clear_with_filter(client->data_ctx.group, "socket-write", (void *)fd);
-
-	return 1;
+	client->data_ctx.resume_buffer = ctx.buffer;
+	client->data_ctx.resume_length = strlen(ctx.buffer);
+	
+	/* the rest of this function uses the same code as ftpd_client_data_resume_send */
+	return ftpd_client_data_resume_send(fd, client);
 }
 
 int ftpd_client_data_close(int fd, struct ftpd_client_ctx *client) {
@@ -1364,6 +1593,23 @@ int ftpd_client_data_connect_timeout(struct ftpd_client_ctx *client) {
 	return 0;
 }
 
+int ftpd_client_data_secure_connect(int fd, struct ftpd_client_ctx *client) {
+	
+	FTPD_DBG("SSL Negotiation completed with success on data connection.");
+	
+	FTPD_DBG("SSL Using Ciphers: %s", SSL_get_cipher_name(client->data_ctx.secure.ssl));
+	FTPD_DBG("SSL Connection Protocol: %s", SSL_get_cipher_version(client->data_ctx.secure.ssl));
+	
+	return 1;
+}
+
+int ftpd_client_data_secure_error(int fd, struct ftpd_client_ctx *client) {
+	
+	FTPD_DBG("SSL Negotiation could not be completed on data connection!");
+	
+	return 1;
+}
+
 int ftpd_client_data_connect(int fd, struct ftpd_client_ctx *client) {
 	struct signal_callback *s;
 
@@ -1387,7 +1633,7 @@ int ftpd_client_data_connect(int fd, struct ftpd_client_ctx *client) {
 			ftpd_client_cleanup_data_connection(client);
 			return 0;
 		}
-		socket_current++;
+		//socket_current++;
 
 		/* enable linger so we'll perform hard abort on closesocket() */
 		socket_linger(client->data_ctx.fd, 0);
@@ -1400,14 +1646,25 @@ int ftpd_client_data_connect(int fd, struct ftpd_client_ctx *client) {
 	}
 
 	FTPD_DIALOG_DBG("[%08x] Data connection established.", (int)client);
+	
+	/* connect the secure layer */
+	secure_connect(&client->data_ctx.secure, client->data_ctx.fd);
 
 	/* set the correct parameters for the new socket */
 	socket_set_max_read(client->data_ctx.fd, FTPD_CLIENT_DATA_SOCKET_SIZE);
 	socket_set_max_write(client->data_ctx.fd, FTPD_CLIENT_DATA_SOCKET_SIZE);
 
 	/* connect only the "write" signal, since we don't need the "read" event. */
-	s = socket_monitor_signal_add(client->data_ctx.fd, client->data_ctx.group, "socket-write", (signal_f)ftpd_client_data_write, client);
+	s = secure_signal_add(&client->data_ctx.secure, client->data_ctx.group, "secure-write", (signal_f)ftpd_client_data_write, client);
 	signal_timeout(s, DATA_CONNECTION_TIMEOUT, (timeout_f)ftpd_client_data_write_timeout, client);
+	
+	s = secure_signal_add(&client->data_ctx.secure, client->data_ctx.group, "secure-resume-send", (signal_f)ftpd_client_data_resume_send, client);
+	s = secure_signal_add(&client->data_ctx.secure, client->data_ctx.group, "secure-connect", (signal_f)ftpd_client_data_secure_connect, client);
+	s = secure_signal_add(&client->data_ctx.secure, client->data_ctx.group, "secure-error", (signal_f)ftpd_client_data_secure_error, client);
+	
+	if(client->protection == FTPD_PROTECTION_PRIVATE) {
+		secure_negotiate(&client->data_ctx.secure);
+	}
 
 	return 1;
 }
@@ -1443,6 +1700,12 @@ static unsigned int ftpd_client_parse_logged_input(struct ftpd_client_ctx *clien
 			" CLNT\n"
 			" SIZE\n"
 			" PRET\n"
+			" AUTH TLS\n"
+			" AUTH SSL\n"
+			" PBSZ\n"
+			" PROT\n"
+			" CCC\n"
+			" SSCN\n"
 			"211 End\n"
 		);
 
@@ -1464,9 +1727,9 @@ static unsigned int ftpd_client_parse_logged_input(struct ftpd_client_ctx *clien
 		FTPD_DIALOG_DBG("[%08x] CMD_SITE (%s)", (int)client, Pointer);
 
 		if(site_handle(client, Pointer)) {
-			ftpd_client_text_enqueue(client->messages, "200-Command OK.\n");
+			ftpd_client_text_enqueue(client->messages, "200 Command OK.\n");
 		} else {
-			ftpd_client_text_enqueue(client->messages, "500-One or more error occured.\n");
+			ftpd_client_text_enqueue(client->messages, "500 One or more error occured.\n");
 		}
 		/*
 		ftpd_client_text_enqueue(client->messages,
@@ -1477,6 +1740,172 @@ static unsigned int ftpd_client_parse_logged_input(struct ftpd_client_ctx *clien
 
 		break;
 
+/*******************************************
+ *******************************************
+
+			Security-related Operations
+
+*******************************************
+*******************************************/
+	case CMD_AUTHENTICATE:
+		FTPD_DIALOG_DBG("[%08x] CMD_AUTHENTICATE (%s)", (int)client, Pointer);
+		
+		/* do not accept AUTH ? */
+		if(ftpd_secure_control_type == FTPD_SECURE_NEVER) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"500-You cannot authenticate.\n"
+				"500 Syntax error, command unrecognized.\n"
+			);
+			return 0;
+		}
+		if(ftpd_secure_control_type == FTPD_SECURE_IMPLICIT) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"503-You do not need to authenticate.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}
+		
+		/* already sent AUTH ? */
+		if(client->auth != FTPD_AUTH_NONE) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"503-You already sent AUTH.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			
+			return 1;
+		}
+		
+		client->auth = FTPD_AUTH_SSL_OR_TLS;
+		client->ssl_waiting = 1;
+		
+		ftpd_client_text_enqueue(client->messages, "234 Using secure connection.");
+		
+		return 1;
+		
+	case CMD_SET_SECURE_CLIENT_NEGOTIATION:
+		FTPD_DIALOG_DBG("[%08x] CMD_SET_SECURE_CLIENT_NEGOTIATION (%s)", (int)client, (Pointer ? Pointer : ""));
+		
+		if(Pointer) {
+			if(!stricmp(Pointer, "ON")) {
+				client->secure_server = 0;
+			}
+			else if(!stricmp(Pointer, "OFF")) {
+				client->secure_server = 1;
+			}
+		}
+		
+		ftpd_client_text_enqueue(client->messages,
+			"200 SSCN:%s METHOD\n", client->secure_server ? "SERVER" : "CLIENT"
+		);
+		
+		return 1;
+	case CMD_PROTECTION_BUFFER_SIZE:
+		FTPD_DIALOG_DBG("[%08x] CMD_PROTECTION_BUFFER_SIZE (%s)", (int)client, Pointer);
+		
+		/* client cannot use this command without AUTH */
+		if(client->auth != FTPD_AUTH_SSL_OR_TLS) {
+			ftpd_client_text_enqueue(client->messages,
+				"503-You cannot use PBSZ before AUTH.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}
+		
+		if(!stricmp(Pointer, "0")) {
+			ftpd_client_text_enqueue(client->messages,
+				"200 Protection Buffer Size set to 0\n"
+			);
+		}
+		else {
+			ftpd_client_text_enqueue(client->messages,
+				"501 This server only accept \"PBSZ 0\"\n"
+			);
+		}
+		
+		return 1;
+	case CMD_PROTECTION:
+		FTPD_DIALOG_DBG("[%08x] CMD_PROTECTION (%s)", (int)client, Pointer);
+		
+		/*
+		PBSZ must be sent before PROT at any time, so it's wrong to check this here
+		if(client->last_command != CMD_PROTECTION_BUFFER_SIZE) {
+			ftpd_client_text_enqueue(client->messages,
+				"503-You must sent PBSZ before PROT.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}*/
+		
+		/* client cannot use this command without AUTH */
+		if(client->auth != FTPD_AUTH_SSL_OR_TLS) {
+			ftpd_client_text_enqueue(client->messages,
+				"503-You cannot use PROT before AUTH.\n"
+				"503 Bad sequence of commands.\n"
+			);
+			return 1;
+		}
+		
+		/* set Private protection */
+		if(*Pointer == 'P') {
+			ftpd_client_text_enqueue(client->messages,
+				"200 Protection set to Private.\n"
+			);
+			client->protection = FTPD_PROTECTION_PRIVATE;
+		}
+		
+		/* set Clear protection */
+		else if(*Pointer == 'C') {
+			ftpd_client_text_enqueue(client->messages,
+				"200 Protection set to Clear.\n"
+			);
+			client->protection = FTPD_PROTECTION_CLEAR;
+		}
+		
+		else {
+			ftpd_client_text_enqueue(client->messages,
+				"501 Unknown protection type.\n"
+			);
+		}
+		
+		return 1;
+	case CMD_CLEAR_COMMAND_CHANNEL:
+		FTPD_DIALOG_DBG("[%08x] CMD_CLEAR_COMMAND_CHANNEL", (int)client);
+		
+		if(client->auth != FTPD_AUTH_SSL_OR_TLS) {
+			ftpd_client_text_enqueue(client->messages,
+				"533 Control connection is not protected.\n"
+			);
+			return 1;
+		}
+		
+		/* auth-only connections cannot be unprotected */
+		if((ftpd_secure_control_type == FTPD_SECURE_ALWAYS) || (ftpd_secure_control_type == FTPD_SECURE_IMPLICIT) || ftpd_secure_no_drop) {
+			ftpd_client_text_enqueue(client->messages,
+				"534 Control connection cannot be cleared.\n"
+			);
+			return 1;
+		}
+		
+		/*
+		ftpd_client_text_enqueue(client->messages,
+			"200 Command Channel Cleared.\n"
+		);
+		
+		client->auth = FTPD_AUTH_NONE;
+		client->ssl_waiting = 1;
+		*/
+		
+		ftpd_client_text_enqueue(client->messages,
+			"534 Control connection cannot be cleared.\n"
+		);
+		
+		return 1;
+		
+		
 /*******************************************
  *******************************************
 
@@ -1557,12 +1986,12 @@ static unsigned int ftpd_client_parse_logged_input(struct ftpd_client_ctx *clien
 
 			/* set the correct data type */
 			if(Type == 'A') {
-				client->type = TYPE_ASCII;
+				client->type = FTPD_TYPE_ASCII;
 				goto __type_success;
 			}
 
 			if(Type == 'I') {
-				client->type = TYPE_IMAGE;
+				client->type = FTPD_TYPE_IMAGE;
 				goto __type_success;
 			}
 
@@ -1589,19 +2018,19 @@ __type_success:
 
 		/* File (no record structure) */
 		if(*Pointer == 'F') {
-			client->structure = STRUCTURE_FILE;
+			client->structure = FTPD_STRUCTURE_FILE;
 			goto __structure_success;
 		}
 
 		/* Record structure */
 		/*if(*Pointer == 'R') {
-			client->structure = STRUCTURE_RECORD;
+			client->structure = FTPD_STRUCTURE_RECORD;
 			goto __structure_success;
 		}*/
 		
 		/* Page structure */
 		/*if(*Pointer == 'P') {
-			client->structure = STRUCTURE_PAGE;
+			client->structure = FTPD_STRUCTURE_PAGE;
 			goto __structure_success;
 		}*/
 
@@ -1624,19 +2053,19 @@ __structure_success:
 
 		/* Stream */
 		if(*Pointer == 'S') {
-			client->mode = MODE_STREAM;
+			client->mode = FTPD_MODE_STREAM;
 			goto __mode_success;
 		}
 
 		/* Block */
 		/*if(*Pointer == 'B') {
-			client->mode = MODE_BLOCK;
+			client->mode = FTPD_MODE_BLOCK;
 			goto __mode_success;
 		}*/
 		
 		/* Compressed */
 		/*if(*Pointer == 'C') {
-			client->mode = MODE_COMPRESSED;
+			client->mode = FTPD_MODE_COMPRESSED;
 			goto __mode_success;
 		}*/
 
@@ -2127,15 +2556,15 @@ __mode_success:
 		*/
 		
 		if(client->data_ctx.fd != -1) {
-			FTPD_DBG("Broken FTP client, tries to open multiple connections...");
-			ftpd_client_text_enqueue(client->messages, "227 Broken FTP client.\n");
+			//FTPD_DBG("Broken FTP client, tries to open multiple connections...");
+			//ftpd_client_text_enqueue(client->messages, "Broken FTP client.\n");
 			ftpd_client_cleanup_data_connection(client);
 		}
 
-		if(client->last_command == CMD_PASSIVE) {
-			FTPD_DBG("Client sent CMD_PASSIVE fucking twice!");
-			ftpd_client_text_enqueue(client->messages, "227 Your broken FTP client sent PASV twice in a row.\n");
-		}
+		/*if(client->last_command == CMD_PASSIVE) {
+			FTPD_DBG("Client sent CMD_PASSIVE twice!");
+			ftpd_client_text_enqueue(client->messages, "Your broken FTP client sent PASV twice in a row.\n");
+		}*/
 
 		if(client->slave_xfer) {
 			
@@ -2169,8 +2598,8 @@ __mode_success:
 					Some clients seems to send CMD_PASSIVE twice,
 					I cannot figure a good goddamn reason why ...
 				*/
-				FTPD_DBG("ERROR: fucking socket is not -1!");
-				ftpd_client_text_enqueue(client->messages, "227 Your broken client fucking sent PASV twice in a row.\n");
+				FTPD_DBG("ERROR: socket is not invalid!");
+				ftpd_client_text_enqueue(client->messages, "Your broken client fucking sent PASV twice in a row.\n");
 				ftpd_client_text_enqueue(client->messages, "425 Can't open data connection.");
 				ftpd_client_cleanup_data_connection(client);
 				return 1;
@@ -2234,8 +2663,8 @@ __mode_success:
 		*/
 
 		if(client->data_ctx.fd != -1) {
-			FTPD_DBG("Broken FTP client, tries to open multiple connections...");
-			ftpd_client_text_enqueue(client->messages, "227 Broken FTP client.\n");
+			//FTPD_DBG("Broken FTP client, tries to open multiple connections...");
+			//ftpd_client_text_enqueue(client->messages, "Broken FTP client.\n");
 			ftpd_client_cleanup_data_connection(client);
 		}
 
@@ -2350,6 +2779,34 @@ __port_error:
 			if(Pointer) Pointer++;
 		}
 		
+		/* If  the protection setting of the client is CLEAR and data
+			security is set to ALWAYS then refuse the connection */
+		if((client->protection == FTPD_PROTECTION_CLEAR) &&
+			(ftpd_secure_data_type == FTPD_SECURE_ALWAYS)) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"521-Data protection is Clear while it should be Private.\n"
+				"521-Server policy need SECURE data transfers.\n"
+				"521 Data connection cannot be opened with this PROT setting.\n"
+			);
+			ftpd_client_cleanup_data_connection(client);
+			break;
+		}
+		
+		/* If  the protection setting of the client is PRIVATE and data
+			security is set to NEVER then refuse the connection */
+		if((client->protection == FTPD_PROTECTION_PRIVATE) &&
+			(ftpd_secure_data_type == FTPD_SECURE_NEVER)) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"521-Data protection is Clear while it should be Private.\n"
+				"521-Server policy DOES NOT accept SECURE data transfers.\n"
+				"521 Data connection cannot be opened with this PROT setting.\n"
+			);
+			ftpd_client_cleanup_data_connection(client);
+			break;
+		}
+		
 		/* if the pathname parameter is given, it can be absolute
 		   or relative to the current user's working directory */
 
@@ -2375,8 +2832,8 @@ __port_error:
 		/* process with the actual listing */
 		if(!client->passive) {
 			if(client->data_ctx.fd != -1) {
-				FTPD_DBG("ERROR: fucking socket not -1");
-				ftpd_client_text_enqueue(client->messages, "425 You have a fucking broken FTP client.");
+				//FTPD_DBG("ERROR: socket not -1");
+				//ftpd_client_text_enqueue(client->messages, "425 You have a broken FTP client.");
 				ftpd_client_text_enqueue(client->messages, "425 Can't open data connection.");
 				ftpd_client_cleanup_data_connection(client);
 				break;
@@ -2468,10 +2925,38 @@ __port_error:
 				"425-******************************************");
 			goto __retr_error;
 		}
-
+		
+		/* If  the protection setting of the client is CLEAR and data
+			security is set to ALWAYS then refuse the connection */
+		if((client->protection == FTPD_PROTECTION_CLEAR) &&
+			(ftpd_secure_data_type == FTPD_SECURE_ALWAYS)) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"521-Data protection is Clear while it should be Private.\n"
+				"521-Server policy need SECURE data transfers.\n"
+				"521 Data connection cannot be opened with this PROT setting.\n"
+			);
+			ftpd_client_cleanup_data_connection(client);
+			break;
+		}
+		
+		/* If  the protection setting of the client is PRIVATE and data
+			security is set to NEVER then refuse the connection */
+		if((client->protection == FTPD_PROTECTION_PRIVATE) &&
+			(ftpd_secure_data_type == FTPD_SECURE_NEVER)) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"521-Data protection is Clear while it should be Private.\n"
+				"521-Server policy DOES NOT accept SECURE data transfers.\n"
+				"521 Data connection cannot be opened with this PROT setting.\n"
+			);
+			ftpd_client_cleanup_data_connection(client);
+			break;
+		}
+		
 		{
 			struct vfs_element *container;
-
+			
 			/* setup the target directory, and check if it exists */
 			if(Pointer) {
 				if(strchr(Pointer, '/') || strchr(Pointer, '\\'))
@@ -2479,7 +2964,7 @@ __port_error:
 				else
 					container = client->working_directory; /* relative to current */
 			} else container = client->working_directory;
-
+			
 			if(client->passive) {
 				if(!client->ready) {
 					/* TODO: send "hard abort" to the slave */
@@ -2493,14 +2978,14 @@ __port_error:
 					goto __retr_error;
 				}
 			}
-
+			
 			/* tell the slave to start sending data */
 			if(!make_slave_transfer_query(client)) {
 				FTPD_DBG("Could not make the slave transfer query");
 				ftpd_client_text_enqueue(client->messages, "Could not make the transfer query to the slave\n", Pointer);
 				goto __retr_error;
 			}
-
+			
 			/*if(client->passive)
 				ftpd_client_text_enqueue(client->messages, "125 Data connection already open; transfer starting.");
 			else*/
@@ -2538,6 +3023,34 @@ __retr_error:
 				"425-******************************************\n"
 			);
 			goto __stor_error;
+		}
+		
+		/* If  the protection setting of the client is CLEAR and data
+			security is set to ALWAYS then refuse the connection */
+		if((client->protection == FTPD_PROTECTION_CLEAR) &&
+			(ftpd_secure_data_type == FTPD_SECURE_ALWAYS)) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"521-Data protection is Clear while it should be Private.\n"
+				"521-Server policy need SECURE data transfers.\n"
+				"521 Data connection cannot be opened with this PROT setting.\n"
+			);
+			ftpd_client_cleanup_data_connection(client);
+			break;
+		}
+		
+		/* If  the protection setting of the client is PRIVATE and data
+			security is set to NEVER then refuse the connection */
+		if((client->protection == FTPD_PROTECTION_PRIVATE) &&
+			(ftpd_secure_data_type == FTPD_SECURE_NEVER)) {
+			
+			ftpd_client_text_enqueue(client->messages,
+				"521-Data protection is Clear while it should be Private.\n"
+				"521-Server policy DOES NOT accept SECURE data transfers.\n"
+				"521 Data connection cannot be opened with this PROT setting.\n"
+			);
+			ftpd_client_cleanup_data_connection(client);
+			break;
 		}
 
 		{
@@ -2664,7 +3177,7 @@ __stor_error:
 		
 		ftpd_client_cleanup_data_connection(client);
 
-		ftpd_client_text_enqueue(client->messages, "226 ABOR command successful.");
+		ftpd_client_text_enqueue(client->messages, "226*ABOR command successful.");
 
 		break;
 	case CMD_BROKEN_ABORT:
@@ -2680,8 +3193,8 @@ __stor_error:
 		
 		ftpd_client_cleanup_data_connection(client);
 
-		ftpd_client_text_enqueue(client->messages, "226 Broken FTP client.");
-		ftpd_client_text_enqueue(client->messages, "226 ABOR command successful.");
+		//ftpd_client_text_enqueue(client->messages, "425 Broken FTP client.");
+		ftpd_client_text_enqueue(client->messages, "226*ABOR command successful.");
 
 		break;
 	case CMD_QUIT:
@@ -2808,6 +3321,9 @@ static void ftpd_client_obj_destroy(struct ftpd_client_ctx *client) {
 		client->messages = NULL;
 	}
 
+	secure_destroy(&client->data_ctx.secure);
+	secure_destroy(&client->secure);
+
 	/* cleanup_data_connection frees the content of this collection */
 	if(client->data_ctx.data) {
 		collection_destroy(client->data_ctx.data);
@@ -2877,15 +3393,15 @@ int ftpd_client_error(int fd, struct ftpd_client_ctx *client) {
 	} else {
 
 		/*
-			Connection was made, so this is a shitty client sending
-			Out Of Band data. (ahem, FlashFXP.)
+			Connection is already made at this point, so this is not a connection
+			error but a damn client sending Out Of Band data. (ahem, FlashFXP.)
 		*/
 
-		ftpd_client_text_enqueue(client->messages, "Your FTP client is SHIT.");
+		//ftpd_client_text_enqueue(client->messages, "Your FTP client is SHIT.");
 		
-		FTPD_DBG("Client's FTP client is SHIT. Sending OOB data.");
+		//FTPD_DBG("Client's FTP client is SHIT. Sending OOB data.");
 
-		FTPD_DBG("There's %u bytes available.", socket_avail(fd));
+		//FTPD_DBG("There's %u bytes available.", socket_avail(fd));
 
 		{
 			char buffer[128];
@@ -2921,24 +3437,50 @@ int ftpd_client_read_timeout(struct ftpd_client_ctx *client) {
 }
 
 int ftpd_client_read(int fd, struct ftpd_client_ctx *client) {
-	int avail, read;
+	int /*avail,*/ read;
 	unsigned int ret;
+	int tryagain;
 
-	avail = socket_avail(fd);
+	/*avail = SSL_pending(client->secure.ssl);
 
 	if(avail > (client->buffersize - client->filledsize)-1)
 		avail = (client->buffersize - client->filledsize)-1;
+	*/
+	
+	//if(!avail) {
+		/* NO bytes available ?? */
+		/*FTPD_DBG("Nothing available, but read was called ...");
+		return 1;
+	}*/
 
-	read = recv(fd, &client->iobuf[client->filledsize], avail, 0);
-	if(read <= 0) {
-		FTPD_DBG("read error (%d) for %u bytes", read, avail);
-		ftpd_client_destroy(client);
-		return 0;
+	/* try to read from socket until eof then try to process what's inside it. */
+	while(1) {
+		tryagain = 0;
+		read = secure_recv(&client->secure, &client->readchr, 1, &tryagain);
+		if((read == -1) && tryagain) {
+			//FTPD_DBG("Could NOT read a line (will try again!)");
+			
+			/* we cannot process what's in the buffer here because we NEED
+				to call secure_recv again with the EXACT SAME parameters,
+				so we just return; */
+			break;
+		}
+		if((read == -1) && (WSAGetLastError() == WSAEWOULDBLOCK)) {
+			/* no more data available? */
+			//FTPD_DBG("No more data available to be read from socket, %u filled.", client->filledsize);
+			break;
+		}
+		if(read != 1) {
+			FTPD_DBG("read error (%d, wanted %u)", read, 1);
+			ftpd_client_destroy(client);
+			return 0;
+		}
+		
+		client->iobuf[client->filledsize] = client->readchr;
+		client->filledsize += read;
 	}
 
-	client->filledsize += read;
-
-	/* make sure we're zero-terminated */
+	/* make sure it's zero-terminated */
 	client->iobuf[client->filledsize] = 0;
 
 	obj_ref(&client->o);
@@ -2976,15 +3518,17 @@ static unsigned int get_replycode_callback(struct collection *c, struct ftpd_col
 
 	*replycode = 0;
 
-	if((l->line[3] != '-') && (l->line[3] != ' '))
+	if((l->line[3] != '-') && (l->line[3] != ' ')) {
 		return 1;
+	}
 
 	snprintf(s, 3, l->line);
 	s[3] = 0;
 
 	n = atoi(s);
-	if(!n)
+	if(!n) {
 		return 1;
+	}
 
 	*replycode = n;
 
@@ -2992,6 +3536,7 @@ static unsigned int get_replycode_callback(struct collection *c, struct ftpd_col
 }
 
 /* build the reply buffer */
+/* TODO: rewrite this mess */
 static unsigned int build_buffer_callback(struct collection *c, struct ftpd_collectible_line *l, void *param) {
 	char *ptr;
 	struct {
@@ -2999,9 +3544,13 @@ static unsigned int build_buffer_callback(struct collection *c, struct ftpd_coll
 		unsigned int current;
 		unsigned int replycode;
 		char *buffer;
+		char *last_line;
 	} *ctx = param;
 	char s[4];
 	char *line = l->line;
+	int skip_code = 0;
+	int new_code = 0;
+	char *last_buffer;
 
 	ctx->current++;
 
@@ -3011,20 +3560,26 @@ static unsigned int build_buffer_callback(struct collection *c, struct ftpd_coll
 		ptr++;
 		if(!strlen(ptr)) ptr = NULL;
 	}
-
+	
 	/* skip any reply code */
-	if((line[3] == '-') || (line[3] == ' ')) {
+	if((line[3] == '-') || (line[3] == ' ') || (line[3] == '*')) {
 		snprintf(s, 3, line);
+		skip_code = (line[3] == '*');
 		s[3] = 0;
-		if(atoi(s)) line += 4;
+		new_code = atoi(s);
+		if(new_code) line += 4;
 	}
 
 	/* prepare the buffer */
 	if(ctx->buffer) {
+		last_buffer = ctx->buffer;
 		ctx->buffer = realloc(ctx->buffer, strlen(ctx->buffer) + 4 + strlen(line) + 3);
 		if(!ctx->buffer) {
 			FTPD_DBG("Memory error");
 			return 0;
+		}
+		if(ctx->last_line) {
+			ctx->last_line += (int)ctx->buffer - (int)last_buffer;
 		}
 	} else {
 		ctx->buffer = malloc(4 + strlen(line) + 3);
@@ -3034,12 +3589,24 @@ static unsigned int build_buffer_callback(struct collection *c, struct ftpd_coll
 		}
 		*(ctx->buffer) = 0;
 	}
+	
+	if(skip_code) {
+		ctx->replycode = new_code;
+		if(ctx->last_line) {
+			ctx->last_line[3] = ' ';
+		}
+	}
 
 	/* append to the buffer */
-	if((ctx->current == ctx->count) && !ptr) 
+	if((ctx->current == ctx->count) && !ptr) {
+		ctx->last_line = &ctx->buffer[strlen(ctx->buffer)];
 		sprintf(&ctx->buffer[strlen(ctx->buffer)], "%u %s\r\n", ctx->replycode, line);
-	else
+	} else {
+		ctx->last_line = &ctx->buffer[strlen(ctx->buffer)];
 		sprintf(&ctx->buffer[strlen(ctx->buffer)], "%u-%s\r\n", ctx->replycode, line);
+	}
+	
+	skip_code = 0;
 
 	line = ptr;
 	/* loop the rest of the message */
@@ -3051,32 +3618,55 @@ static unsigned int build_buffer_callback(struct collection *c, struct ftpd_coll
 			if(!strlen(ptr)) ptr = NULL;
 		}
 
+		skip_code = (line[3] == '*');
 		snprintf(s, 3, line);
 		s[3] = 0;
-
-		if(((line[3] == '-') || (line[3] == ' ')) && atoi(s)) {
+		new_code = atoi(s);
+		
+		if(((line[3] == '-') || (line[3] == ' ') || (line[3] == '*')) && atoi(s)) {
 			line += 4;
-
+			
+			last_buffer = ctx->buffer;
 			ctx->buffer = realloc(ctx->buffer, strlen(ctx->buffer) + 4 + strlen(line) + 3);
 			if(!ctx->buffer) {
 				FTPD_DBG("Memory error");
 				return 0;
 			}
-
+			if(ctx->last_line) {
+				ctx->last_line += (int)ctx->buffer - (int)last_buffer;
+			}
+			
+			if(skip_code) {
+				ctx->replycode = new_code;
+				if(ctx->last_line) {
+					ctx->last_line[3] = ' ';
+				}
+			}
+			
 			/* append to the buffer */
-			if((ctx->current == ctx->count) && !ptr) 
+			if((ctx->current == ctx->count) && !ptr) {
+				ctx->last_line = &ctx->buffer[strlen(ctx->buffer)];
 				sprintf(&ctx->buffer[strlen(ctx->buffer)], "%u %s\r\n", ctx->replycode, line);
-			else
+			} else {
+				ctx->last_line = &ctx->buffer[strlen(ctx->buffer)];
 				sprintf(&ctx->buffer[strlen(ctx->buffer)], "%u-%s\r\n", ctx->replycode, line);
+			}
+			
+			skip_code = 0;
 		} else {
 			/* there was no reply code, don't add one */
+			last_buffer = ctx->buffer;
 			ctx->buffer = realloc(ctx->buffer, strlen(ctx->buffer) + strlen(line) + 3);
 			if(!ctx->buffer) {
 				FTPD_DBG("Memory error");
 				return 0;
 			}
+			if(ctx->last_line) {
+				ctx->last_line += (int)ctx->buffer - (int)last_buffer;
+			}
 
 			/* append to the buffer */
+			ctx->last_line = &ctx->buffer[strlen(ctx->buffer)];
 			sprintf(&ctx->buffer[strlen(ctx->buffer)], "%s\r\n", line);
 		}
 
@@ -3090,17 +3680,24 @@ static unsigned int build_buffer_callback(struct collection *c, struct ftpd_coll
 	return 1;
 }
 
-/* send a message on a socket right away */
-static int ftpd_client_send(struct ftpd_client_ctx *client, char *str) {
+static int ftpd_client_resume_send(int fd, struct ftpd_client_ctx *client) {
 	int size;
+	int tryagain;
 
-	size = send(client->fd, str, strlen(str), 0);
-	if(size != strlen(str)) {
-		
+	tryagain = 0;
+	size = secure_send(&client->secure, client->resume_buffer, client->resume_length, &tryagain);
+	if((size == -1) && tryagain) {
+		FTPD_DBG("SSL Re-Negotiation during Client-Server dialog!");
+		return 1;
+	}
+	if(size != client->resume_length) {
 		FTPD_DBG("WARNING: sent size mismatch line length");
-		return 0;
 	}
 
+	free(client->resume_buffer);
+	client->resume_buffer = NULL;
+	client->resume_length = 0;
+	
 	return 1;
 }
 
@@ -3115,7 +3712,8 @@ static int ftpd_client_process_output(struct ftpd_client_ctx *client) {
 		unsigned int current;
 		unsigned int replycode;
 		char *buffer;
-	} ctx = { 0, 0, 0, NULL };
+		char *last_line;
+	} ctx = { 0, 0, 0, NULL, NULL };
 
 	ctx.count = collection_size(client->messages);
 	if(!ctx.count)
@@ -3124,27 +3722,23 @@ static int ftpd_client_process_output(struct ftpd_client_ctx *client) {
 	/* try to get the reply code */
 	collection_iterate(client->messages, (collection_f)get_replycode_callback, &ctx.replycode);
 	if((ctx.replycode > 999) || (ctx.replycode < 100)) {
-		/* can't get replycode ... */
-		FTPD_DBG("Could not get valid reply code (%u is invalid)", ctx.replycode);
-		return 0;
+		/* can't get replycode, but maybe we can ship this line with the next message */
+		//FTPD_DBG("Could not get valid reply code (%u is invalid)", ctx.replycode);
+		return 1;
 	}
-
+	
 	/* build a big buffer with all replies */
 	collection_iterate(client->messages, (collection_f)build_buffer_callback, &ctx);
 	if(!ctx.buffer) {
 		FTPD_DBG("Could not build a message buffer");
 		return 0;
 	}
-
+	
+	client->resume_buffer = ctx.buffer;
+	client->resume_length = strlen(ctx.buffer);
+	
 	/* send the buffer */
-	if(!ftpd_client_send(client, ctx.buffer)) {
-		FTPD_DBG("Could not send message to client");
-		free(ctx.buffer);
-		return 0;
-	}
-	free(ctx.buffer);
-
-	return 1;
+	return ftpd_client_resume_send(client->fd, client);
 }
 
 int ftpd_client_write_timeout(struct ftpd_client_ctx *client) {
@@ -3163,29 +3757,28 @@ int ftpd_client_write_timeout(struct ftpd_client_ctx *client) {
 	return 1;
 }
 
-
 int ftpd_client_write(int fd, struct ftpd_client_ctx *client) {
 
 	obj_ref(&client->o);
 
 	if(!client->connected) {
 		unsigned int ip;
-
+		
 		FTPD_DIALOG_DBG("Sending greetings to client ...");
 		client->connected = 1;
-
+		
 		ip = socket_peer_address(client->fd);
-
+		
 		/* say hello */
 		ftpd_client_text_enqueue(client->messages, "220-%s\n", ftpd_banner);
 		ftpd_client_text_enqueue(client->messages, "220-Connection accepted from %u.%u.%u.%u.\n",
 			(ip) & 0xff, (ip >> 8) & 0xff,
 			(ip >> 16) & 0xff, (ip >> 24) & 0xff
 		);
-
+		
 		client->timestamp = time_now();
 		client->last_timestamp = time_now();
-
+		
 		/* call the onClientConnect event */
 		if(!event_onClientConnect(client)) {
 			FTPD_DBG("Connection refused for new client at %u.%u.%u.%u",
@@ -3197,9 +3790,17 @@ int ftpd_client_write(int fd, struct ftpd_client_ctx *client) {
 			return 0;
 		}
 		ftpd_client_text_enqueue(client->messages, "220 Service ready for new user.");
-
+		
+		/* start ssl negotiation if the secure type is implicit */
+		/*if(ftpd_secure_control_type == FTPD_SECURE_IMPLICIT) {
+			client->auth = FTPD_AUTH_SSL_OR_TLS;
+			secure_negotiate(&client->secure);
+		}*/
+		
+		if(client->secure.use_secure && client->secure.ssl) {
+		}
 	} else {
-
+		
 		/* Check the timeout on client connection */
 		if(!ftpd_client_write_timeout(client)) {
 			FTPD_DIALOG_DBG("Client connection timed out before writing.");
@@ -3207,7 +3808,7 @@ int ftpd_client_write(int fd, struct ftpd_client_ctx *client) {
 			obj_unref(&client->o);
 			return 0;
 		}
-
+		
 		/* if there's data to send in the message buffer, send it */
 		if(!ftpd_client_process_output(client)) {
 			FTPD_DBG("Could not process output to client.");
@@ -3215,9 +3816,45 @@ int ftpd_client_write(int fd, struct ftpd_client_ctx *client) {
 			obj_unref(&client->o);
 			return 0;
 		}
+		
+		if(!collection_size(client->messages) && client->ssl_waiting) {
+			if(client->auth == FTPD_AUTH_NONE) {
+				FTPD_DBG("Dropping SSL Session.");
+				secure_drop(&client->secure);
+			}
+			else if(client->auth == FTPD_AUTH_SSL_OR_TLS) {
+				FTPD_DBG("Negotiating SSL Session.");
+				secure_negotiate(&client->secure);
+			}
+			
+			client->ssl_waiting = 0;
+		}
 	}
 
 	obj_unref(&client->o);
+	return 1;
+}
+
+int ftpd_client_secure_connect(int fd, struct ftpd_client_ctx *client) {
+	
+	FTPD_DBG("SSL Negotiation completed with success on control connection.");
+	
+	FTPD_DBG("SSL Using Ciphers: %s", SSL_get_cipher_name(client->secure.ssl));
+	FTPD_DBG("SSL Connection Protocol: %s", SSL_get_cipher_version(client->secure.ssl));
+	
+	ftpd_client_text_enqueue(client->messages,
+		"Negotiated %s session using cipher(s) %s\n",
+		SSL_get_cipher_version(client->secure.ssl),
+		SSL_get_cipher_name(client->secure.ssl)
+	);
+	
+	return 1;
+}
+
+int ftpd_client_secure_error(int fd, struct ftpd_client_ctx *client) {
+	
+	FTPD_DBG("SSL Negotiation could not be completed on control connection!");
+	
 	return 1;
 }
 
@@ -3260,6 +3897,24 @@ struct ftpd_client_ctx *ftpd_client_new(int fd) {
 	client->data_ctx.fd = -1;
 	client->data_ctx.data = collection_new(C_CASCADE);
 	client->data_ctx.group = collection_new(C_CASCADE);
+	client->data_ctx.resume_buffer = NULL;
+	client->data_ctx.resume_length = 0;
+	
+	/* setup the secure context for data operations */
+	secure_setup(&client->data_ctx.secure, SECURE_TYPE_SERVER);
+	SSL_CTX_set_cipher_list(client->data_ctx.secure.ssl_ctx,
+		/* default ciphers list */
+		//"DES:CBC3:SHA");
+		"ALL");
+	
+	if(SSL_CTX_use_certificate(client->data_ctx.secure.ssl_ctx, ftpd_certificate_file) != 1) {
+		FTPD_DBG("Could not load certificate from file!");
+	}
+	if(SSL_CTX_use_PrivateKey(client->data_ctx.secure.ssl_ctx, ftpd_certificate_key) != 1) {
+		FTPD_DBG("Could not load rsa private key from file!");
+	}
+	
+	//SSL_CTX_use_certificate(client->data_ctx.secure.ssl_ctx, ...);
 
 	/* setup the working directory */
 	client->working_directory = vfs_root;
@@ -3280,9 +3935,16 @@ struct ftpd_client_ctx *ftpd_client_new(int fd) {
 	client->ip = 0;
 	client->port = 0;
 
-	client->type = TYPE_ASCII;
-	client->structure = STRUCTURE_FILE;
-	client->mode = MODE_STREAM;
+	client->type = FTPD_TYPE_ASCII;
+	client->structure = FTPD_STRUCTURE_FILE;
+	client->mode = FTPD_MODE_STREAM;
+	client->auth = FTPD_AUTH_NONE;
+	client->protection = FTPD_PROTECTION_CLEAR;
+	
+	/* by default, the ftp server is also the ssl server. */
+	client->secure_server = 1;
+
+	client->ssl_waiting = 0;
 
 	/* slave xfer variables */
 	client->xfer.uid = -1;
@@ -3293,20 +3955,53 @@ struct ftpd_client_ctx *ftpd_client_new(int fd) {
 	client->xfer.cnx = NULL;
 	client->xfer.xfered = 0;
 	client->xfer.last_alive = time_now();
+	
+	client->resume_buffer = NULL;
+	client->resume_length = 0;
 
 	/* hook all signals on the socket */
 	socket_monitor_new(fd, 1, 1);
 	socket_monitor_signal_add(fd, client->group, "socket-close", (signal_f)ftpd_client_close, client);
 	socket_monitor_signal_add(fd, client->group, "socket-error", (signal_f)ftpd_client_error, client);
 	
+	secure_setup(&client->secure, SECURE_TYPE_SERVER);
+	SSL_CTX_set_cipher_list(client->secure.ssl_ctx,
+		/* default ciphers list */
+		//"DES:CBC3:SHA");
+		"ALL");
+	
+	if(SSL_CTX_use_certificate(client->secure.ssl_ctx, ftpd_certificate_file) != 1) {
+		FTPD_DBG("Could not load certificate from file!");
+	}
+	if(SSL_CTX_use_PrivateKey(client->secure.ssl_ctx, ftpd_certificate_key) != 1) {
+		FTPD_DBG("Could not load rsa private key from file!");
+	}
+	/*if(SSL_CTX_use_RSAPrivateKey_file(client->secure.ssl_ctx, "xFTPd.key", SSL_FILETYPE_PEM) != 1) {
+		FTPD_DBG("Could not load rsa private key from file!");
+	}*/
+	
+	/* connect the ssl layer */
+	secure_connect(&client->secure, fd);
+	
 	{
 		struct signal_callback *s;
 		
-		s = socket_monitor_signal_add(fd, client->group, "socket-read", (signal_f)ftpd_client_read, client);
+		s = secure_signal_add(&client->secure, client->group, "secure-read", (signal_f)ftpd_client_read, client);
 		signal_timeout(s, FTPD_CLIENT_TIMEOUT, (timeout_f)ftpd_client_read_timeout, client);
 		
-		s = socket_monitor_signal_add(fd, client->group, "socket-write", (signal_f)ftpd_client_write, client);
+		s = secure_signal_add(&client->secure, client->group, "secure-write", (signal_f)ftpd_client_write, client);
 		signal_timeout(s, FTPD_CLIENT_TIMEOUT, (timeout_f)ftpd_client_write_timeout, client);
+		
+		s = secure_signal_add(&client->secure, client->group, "secure-resume-recv", (signal_f)ftpd_client_read, client);
+		s = secure_signal_add(&client->secure, client->group, "secure-resume-send", (signal_f)ftpd_client_resume_send, client);
+		
+		s = secure_signal_add(&client->secure, client->group, "secure-error", (signal_f)ftpd_client_secure_error, client);
+		s = secure_signal_add(&client->secure, client->group, "secure-connect", (signal_f)ftpd_client_secure_connect, client);
+	}
+	
+	if(ftpd_secure_control_type == FTPD_SECURE_IMPLICIT) {
+		client->auth = FTPD_AUTH_SSL_OR_TLS;
+		secure_negotiate(&client->secure);
 	}
 
 	/* add the context to the clients collection */
@@ -3342,7 +4037,7 @@ int ftpd_connect(int fd, void *param) {
 		FTPD_DBG("FTPD socket could not accept new client");
 		return 0;
 	}
-	socket_current++;
+	//socket_current++;
 
 	ftpd_connections++;
 	
@@ -3384,8 +4079,193 @@ int ftpd_close(int fd, void *param) {
 	return 1;
 }
 
+/*
+	Reference:
+	http://www.opensource.apple.com/darwinsource/Current/OpenSSL096-5/openssl/demos/selfsign.c
+*/
+int ftpd_generate_certificate(X509 **x509p, EVP_PKEY **pkeyp, int bits, int serial, int days) {
+	X509 *x;
+	EVP_PKEY *pk;
+	RSA *rsa;
+	X509_NAME *name = NULL;
+	char buffer[1024];
+	unsigned int i;
+	
+	if(!x509p || !pkeyp) {
+		FTPD_DBG("Invalid parameters");
+		return 0;
+	}
+	
+	pk = *pkeyp;
+	x = *x509p;
+	
+	if (!pk) {
+		pk = EVP_PKEY_new();
+		if (!pk) {
+			FTPD_DBG("Could NOT create private key");
+			return 0;
+		}
+	}
+	if (!x) {
+		x = X509_new();
+		if (!x) {
+			FTPD_DBG("Could NOT create x509 certificate");
+			return 0;
+		}
+	}
+	
+	rsa = RSA_generate_key(bits, RSA_F4, NULL /*callback*/, NULL);
+	if (!EVP_PKEY_assign_RSA(pk, rsa)) {
+		FTPD_DBG("Could NOT assign RSA key to private key");
+		return 0;
+	}
+	rsa = NULL;
+	
+	X509_set_version(x, 2);
+	ASN1_INTEGER_set(X509_get_serialNumber(x), serial);
+	X509_gmtime_adj(X509_get_notBefore(x), 0);
+	X509_gmtime_adj(X509_get_notAfter(x), (long)60*60*24*days);
+	X509_set_pubkey(x, pk);
+	
+	name = X509_get_subject_name(x);
+	
+	for(i=1;;i++) {
+		char *p, *v;
+		
+		sprintf(buffer, "xftpd.secure.certificate.name(%u)", i);
+		p = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
+		if(!p) {
+			break;
+		}
+		
+		v = strchr(p, '=');
+		if(v) {
+			*v = 0;
+			v++;
+			
+			X509_NAME_add_entry_by_txt(name, p, MBSTRING_ASC, v, -1, -1, 0);
+			
+			FTPD_DBG("Adding name entry \"%s\" = \"%s\"", p, v);
+		} else {
+			FTPD_DBG("Invalid name entry: %s", p);
+		}
+		
+		free(p);
+	}
+	
+	X509_set_issuer_name(x, name);
+	
+	if(!X509_sign(x, pk, EVP_md5())) {
+		FTPD_DBG("Could NOT sign x509 certificate!");
+		return 0;
+	}
+	
+	*x509p = x;
+	*pkeyp = pk;
+	
+	return 1;
+}
+
+/*
+	Reference:
+	http://www.opensource.apple.com/darwinsource/Current/OpenSSL096-5/openssl/demos/selfsign.c
+*/
+static int ftpd_make_certificate(X509 **x509p, EVP_PKEY **pkeyp, const char *pem_filename, const char *key_filename) {
+	FILE *f;
+	X509 *cert_x509;
+	EVP_PKEY *cert_pkey;
+	
+	if(!x509p || !pkeyp) {
+		FTPD_DBG("Invalid parameters");
+		return 0;
+	}
+	
+	if(!ftpd_generate_certificate(x509p, pkeyp, 2048, 0, 365 * 10 /* 10 years */)) {
+		FTPD_DBG("Could NOT generate certificate!");
+		return 0;
+	}
+	
+	cert_x509 = *x509p;
+	cert_pkey = *pkeyp;
+	
+	f = fopen(key_filename, "wb");
+	if(!f) {
+		X509_free(cert_x509);
+		EVP_PKEY_free(cert_pkey);
+		FTPD_DBG("Could not open file %s for writing", key_filename);
+		return 0;
+	}
+	PEM_write_PrivateKey(f, cert_pkey, NULL, NULL, 0, NULL, NULL);
+	fclose(f);
+	
+	f = fopen(pem_filename, "wb");
+	if(!f) {
+		FTPD_DBG("Could not open file %s for writing", pem_filename);
+		X509_free(cert_x509);
+		EVP_PKEY_free(cert_pkey);
+		return 0;
+	}
+	PEM_write_X509(f, cert_x509);
+	fclose(f);
+	
+	return 1;
+}
+
+static int ftpd_load_certificate(X509 **x509p, EVP_PKEY **pkeyp, const char *pem_filename, const char *key_filename) {
+	FILE *f;
+	X509 *cert_x509 = NULL;
+	EVP_PKEY *cert_pkey = NULL;
+	
+	if(!x509p || !pkeyp) {
+		FTPD_DBG("Invalid parameters");
+		return 0;
+	}
+	
+	f = fopen(pem_filename, "rb");
+	if(!f) {
+		FTPD_DBG("Cannot open file %s.", pem_filename);
+		return 0;
+	}
+	
+	cert_x509 = PEM_read_X509(f, NULL, NULL, NULL);
+	if(!cert_x509) {
+		FTPD_DBG("Could not load the certificate from %s. Please make sure it is "
+					"a valid x509 PEM certificate file.", pem_filename);
+		fclose(f);
+		return 0;
+	}
+	
+	/* Certificate loaded! Should we make any checks on its validity here? */
+	fclose(f);
+	
+	/* Load the certificate's key */
+	f = fopen(key_filename, "rb");
+	if(!f) {
+		FTPD_DBG("Cannot open file %s.", key_filename);
+		return 0;
+	}
+	
+	cert_pkey = PEM_read_PrivateKey(f, NULL, NULL, NULL);
+	if(!cert_pkey) {
+		FTPD_DBG("Could not load the certificate from %s. Please make sure it is "
+					"a valid PEM private key file.", key_filename);
+		fclose(f);
+		return 0;
+	}
+	
+	/* Certificate loaded! Should we make any checks on its validity here? */
+	
+	fclose(f);
+	
+	*x509p = cert_x509;
+	*pkeyp = cert_pkey;
+	
+	return 1;
+}
+
 int ftpd_load_config() {
 	unsigned int v;
+	char *p, *q;
 
 	/* read ftpd port */
 	v = config_raw_read_int(MASTER_CONFIG_FILE, "xftpd.port", FTPD_PORT);
@@ -3420,6 +4300,88 @@ int ftpd_load_config() {
 
 	/* read the server name */
 	ftpd_banner = config_raw_read(MASTER_CONFIG_FILE, "xftpd.banner", "Welcome to this xFTPd Server");
+	
+	/* disable CCC support ? */
+	ftpd_secure_no_drop = config_raw_read_int(MASTER_CONFIG_FILE, "xftpd.secure.control-never-drop", 0);
+	
+	p = config_raw_read(MASTER_CONFIG_FILE, "xftpd.secure.control", NULL);
+	if(!p) {
+		ftpd_secure_control_type = FTPD_SECURE_BOTH;
+	} else {
+		if(!stricmp(p, "normal-only")) {
+			ftpd_secure_control_type = FTPD_SECURE_NEVER;
+		}
+		else if(!stricmp(p, "secure-only")) {
+			ftpd_secure_control_type = FTPD_SECURE_ALWAYS;
+		}
+		else if(!stricmp(p, "normal-or-secure")) {
+			ftpd_secure_control_type = FTPD_SECURE_BOTH;
+		}
+		else if(!stricmp(p, "implicit")) {
+			ftpd_secure_control_type = FTPD_SECURE_IMPLICIT;
+		}
+		else {
+			/* default */
+			ftpd_secure_control_type = FTPD_SECURE_BOTH;
+		}
+		
+		free(p);
+	}
+	
+	p = config_raw_read(MASTER_CONFIG_FILE, "xftpd.secure.data", NULL);
+	if(!p) {
+		ftpd_secure_data_type = FTPD_SECURE_BOTH;
+	} else {
+		if(!stricmp(p, "normal-only")) {
+			ftpd_secure_data_type = FTPD_SECURE_NEVER;
+		}
+		else if(!stricmp(p, "secure-only")) {
+			ftpd_secure_data_type = FTPD_SECURE_ALWAYS;
+		}
+		else if(!stricmp(p, "normal-or-secure")) {
+			ftpd_secure_data_type = FTPD_SECURE_BOTH;
+		}
+		else {
+			/* default */
+			ftpd_secure_data_type = FTPD_SECURE_BOTH;
+		}
+		
+		free(p);
+	}
+	
+	if((ftpd_secure_control_type != FTPD_SECURE_NEVER) || (ftpd_secure_data_type != FTPD_SECURE_NEVER)) {
+		/* load the certificate file ... */
+		p = config_raw_read(MASTER_CONFIG_FILE, "xftpd.secure.certificate.file", NULL);
+		q = config_raw_read(MASTER_CONFIG_FILE, "xftpd.secure.certificate.key", NULL);
+		if(p && q) {
+			ftpd_certificate_file = NULL;
+			ftpd_certificate_key = NULL;
+			if(!ftpd_load_certificate(&ftpd_certificate_file, &ftpd_certificate_key, p, q)) {
+				FTPD_DBG("Could NOT load certificate file %s, STARTUP FAILED: A CERTIFICATE IS NEEDED", p);
+				free(p);
+				return 0;
+			} else {
+				FTPD_DBG("Certificate was loaded from %s", p);
+			}
+			free(p);
+			free(q);
+		} else {
+			p = MASTER_DEFAULT_CERTIFICATE_FILENAME;
+			q = MASTER_DEFAULT_PRIVATE_KEY_FILENAME;
+			ftpd_certificate_file = NULL;
+			ftpd_certificate_key = NULL;
+			if(!ftpd_load_certificate(&ftpd_certificate_file, &ftpd_certificate_key, p, q)) {
+				FTPD_DBG("Could NOT load certificate file %s (default file), will generate a new one.", p);
+				if(!ftpd_make_certificate(&ftpd_certificate_file, &ftpd_certificate_key, p, q)) {
+					FTPD_DBG("Certificate could NOT be generated.");
+				} else {
+					FTPD_DBG("Certificate was generated and written to %s (default file)", p);
+				}
+			} else {
+				FTPD_DBG("Certificate was loaded from %s (default file)", p);
+			}
+		}
+	}
 
 	return 1;
 }

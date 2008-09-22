@@ -445,6 +445,13 @@ int event_raise(char *name, unsigned int param_count, struct event_parameter *pa
 	return o.ret.success;
 }
 
+unsigned int event_onPreReload() {
+
+	EVENTS_CALLS_DBG("onPreReload");
+
+	return event_raise("onPreReload", 0, NULL);
+}
+
 // can be called from anywhere
 unsigned int event_onReload() {
 

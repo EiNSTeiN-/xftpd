@@ -318,7 +318,7 @@ int proxy_connection_out_connect(int fd, struct proxy_connection *cnx) {
 			proxy_destroy(cnx);
 			return 0;
 		}
-		socket_current++;
+		//socket_current++;
 
 		/* enable linger so we'll perform hard abort on closesocket() */
 		socket_linger(cnx->out.fd, 0);
@@ -486,7 +486,7 @@ int proxy_listening_connect(int fd, unsigned int *listening) {
 		PROXY_DBG("Cannot accept incomming connection");
 		return 1;
 	}
-	socket_current++;
+	//socket_current++;
 
 	/* enable linger so we'll perform hard abort on closesocket() */
 	socket_linger(fd_in, 0);

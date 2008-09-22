@@ -36,12 +36,19 @@
 #ifndef __LUAINIT_H
 #define __LUAINIT_H
 
-#include "lualib.h"
-#include "lauxlib.h"
-#include "tolua.h"
+#include <lualib.h>
+#include <lauxlib.h>
+#include <tolua.h>
 
 #include "constants.h"
 #include "logging.h"
+
+/* disable tolua's function, we've got our own */
+#define TOLUA_DISABLE_tolua_xFTPd_bind_collection_iterate00
+
+#ifdef TOLUA_DISABLE_tolua_xFTPd_bind_collection_iterate00
+  int tolua_xFTPd_bind_collection_iterate00(lua_State* tolua_S);
+#endif
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_LUAINIT

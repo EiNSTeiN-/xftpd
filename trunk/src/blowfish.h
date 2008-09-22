@@ -33,45 +33,61 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __TREE_H
-#define __TREE_H
+#ifndef __BLOWFISH_H
+#define __BLOWFISH_H
+
+#include <windows.h>
+#include <stdio.h>
 
 #include "constants.h"
-#include "obj.h"
-#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
-//#  define DEBUG_TREE
+#  define DEBUG_BLOWFISH
 #endif
 
-#ifdef DEBUG_TREE
+#ifdef DEBUG_BLOWFISH
 # ifdef FTPD_DEBUG_TO_CONSOLE
-#  define TREE_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+#  define BLOWFISH_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
 # else
-#  define TREE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+#  include "logging.h"
+#  define BLOWFISH_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
 # endif
 #else
-#  define TREE_DBG(format, arg...)
+#  define BLOWFISH_DBG(format, arg...)
 #endif
 
-struct branch {
-	struct obj o;
-	struct collectible c;
+#define bf_N			16
+#define MAXKEYBYTES		56
 
-	/* name of this level */
-	char *name;
+typedef unsigned int		u_32bit_t;
+typedef unsigned short int	u_16bit_t;
+typedef unsigned char		u_8bit_t;
 
-	/* lua functions chain */
-	struct collection *handlers;
+union aword {
+  u_32bit_t word;
+  u_8bit_t byte[4];
+  struct {
+#ifdef WORDS_BIGENDIAN
+    unsigned int byte0:8;
+    unsigned int byte1:8;
+    unsigned int byte2:8;
+    unsigned int byte3:8;
+#else				/* !WORDS_BIGENDIAN */
+    unsigned int byte3:8;
+    unsigned int byte2:8;
+    unsigned int byte1:8;
+    unsigned int byte0:8;
+#endif				/* !WORDS_BIGENDIAN */
+  } w;
+};
 
-	/* childs for this level */
-	struct collection *branches;
+struct bf_state {
+	u_32bit_t bf_P[bf_N+2];
+	u_32bit_t bf_S[4][256];
 } __attribute__((packed));
 
-typedef int (*tree_f)(void *a, void *b);
+char *blowfish_decrypt(struct bf_state *state, char *str);
+char *blowfish_encrypt(struct bf_state *state, char *str);
+int blowfish_init(struct bf_state *state, u_8bit_t * key, int keybytes);
 
-unsigned int tree_add(struct collection *branches, char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b));
-struct collection *tree_get(struct collection *branches, char *trigger, char **args);
-unsigned int tree_destroy(struct collection *branches);
-
-#endif /* __TREE_H */
+#endif /* __BLOWFISH_H */
