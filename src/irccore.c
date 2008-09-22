@@ -33,6 +33,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include <windows.h>
 #include <stdio.h>
 #include <poll.h>
@@ -50,6 +51,7 @@
 #include "luainit.h"
 #include "signal.h"
 #include "main.h"
+#include "events.h"
 
 
 /* for now, there's support for only one server */
@@ -58,6 +60,15 @@ struct irc_server irccore_server;
 struct collection *irc_hooks = NULL;
 
 static char *irc_prefix = NULL;
+
+static void irc_channel_obj_destroy(struct irc_channel *channel) {
+	
+	collectible_destroy(channel);
+	
+	/* TODO */
+	
+	return;
+}
 
 /* add a channel to the specified server */
 struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char *key) {
@@ -68,6 +79,9 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 		IRC_DBG("Memory error");
 		return 0;
 	}
+	
+	obj_init(&channel->o, channel, (obj_f)irc_channel_obj_destroy);
+	collectible_init(channel);
 
 	channel->timestamp = time_now();
 	channel->joined = 0;
@@ -79,23 +93,27 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 		return 0;
 	}
 
-	channel->key = strdup(key);
-	if(!channel->key) {
-		IRC_DBG("Memory error");
-		free(channel->name);
-		free(channel);
-		return 0;
+	if(key) {
+		channel->key = strdup(key);
+		if(!channel->key) {
+			IRC_DBG("Memory error");
+			free(channel->name);
+			free(channel);
+			return 0;
+		}
+	} else {
+		channel->key = NULL;
 	}
 
-	channel->queue = collection_new();
-	channel->groups = collection_new();
+	channel->queue = collection_new(C_CASCADE);
+	channel->groups = collection_new(C_CASCADE);
 
 	if(!collection_add(server->channels, channel)) {
 		IRC_DBG("Collection error");
 		collection_destroy(channel->groups);
 		collection_destroy(channel->queue);
 		free(channel->name);
-		free(channel->key);
+		if(key) free(channel->key);
 		free(channel);
 		return NULL;
 	}
@@ -107,6 +125,7 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 
 /* enqueue a raw message to be sent to the server */
 unsigned int irc_raw(struct irc_server *server, const char *fmt, ...) {
+	struct ftpd_collectible_line *l;
 	int result;
 	char *str;
 
@@ -115,19 +134,22 @@ unsigned int irc_raw(struct irc_server *server, const char *fmt, ...) {
 	result = vasprintf(&str, fmt, args);
 	if(result == -1) return 0;
 	va_end(args);
-
-	if(!collection_add(server->queue, str)) {
-		IRC_DBG("Collection error");
-		free(str);
-		return 0;
+	
+	l = ftpd_line_new(str);
+	if(l) {
+		if(!collection_add(server->queue, l)) {
+			IRC_DBG("Collection error");
+		} else {
+			collection_movelast(server->queue, l);
+		}
 	}
-	collection_movelast(server->queue, str);
+	free(str);
 
 	return 1;
 }
 
 /* used by irc_channel_exist */
-static unsigned int get_channel_callback(struct collection *c, void *item, void *param) {
+static int get_channel_callback(struct collection *c, void *item, void *param) {
 	struct irc_channel *channel = item;
 	struct {
 		struct irc_server *server;
@@ -156,6 +178,7 @@ static struct irc_channel *get_channel(struct irc_server *server, char *channel_
 }
 
 static unsigned int enqueue_message(struct collection *queue, char *fmt, ...) {
+	struct ftpd_collectible_line *l;
 	int result;
 	char *str;
 
@@ -164,13 +187,16 @@ static unsigned int enqueue_message(struct collection *queue, char *fmt, ...) {
 	result = vasprintf(&str, fmt, args);
 	if(result == -1) return 0;
 	va_end(args);
-
-	if(!collection_add(queue, str)) {
-		IRC_DBG("Collection error");
-		free(str);
-		return 0;
+	
+	l = ftpd_line_new(str);
+	if(l) {
+		if(!collection_add(queue, l)) {
+			IRC_DBG("Collection error");
+		} else {
+			collection_movelast(queue, l);
+		}
 	}
-	collection_movelast(queue, str);
+	free(str);
 
 	return 1;
 }
@@ -209,31 +235,27 @@ unsigned int irc_say(struct irc_server *server, char *channel_name, char *fmt, .
 
 /* add a group to a channel */
 unsigned int irc_channel_add_group(struct irc_channel *channel, char *group) {
-	char *s;
+	struct ftpd_collectible_line *l;
 
-	s = strdup(group);
-	if(!s) {
-		IRC_DBG("Memory error");
-		return 0;
+	l = ftpd_line_new(group);
+	if(l) {
+		if(!collection_add(channel->groups, l)) {
+			IRC_DBG("Collection error");
+			return 0;
+		}
+		return 1;
 	}
 
-	if(!collection_add(channel->groups, s)) {
-		IRC_DBG("Collection error");
-		free(s);
-		return 0;
-	}
-
-	return 1;
+	return 0;
 }
 
-static unsigned int is_channel_in_group_callback(struct collection *c, void *item, void *param) {
+static int is_channel_in_group_callback(struct collection *c, struct ftpd_collectible_line *group, void *param) {
 	struct {
 		unsigned int success;
 		char *group;
 	} *ctx = param;
-	char *group = item;
 
-	if(!stricmp(group, ctx->group)) {
+	if(!stricmp(group->line, ctx->group)) {
 		ctx->success = 1;
 		return 0;
 	}
@@ -248,20 +270,19 @@ static unsigned int is_channel_in_group(struct irc_channel *channel, char *group
 		char *group;
 	} ctx = { 0, group };
 
-	collection_iterate(channel->groups, is_channel_in_group_callback, &ctx);
+	collection_iterate(channel->groups, (collection_f)is_channel_in_group_callback, &ctx);
 
 	return ctx.success;
 }
 
 /* used by broadcast_group */
-static unsigned int broadcast_group_callback(struct collection *c, void *item, void *param) {
+static int broadcast_group_callback(struct collection *c, struct irc_channel *channel, void *param) {
 	struct {
 		unsigned int success;
 		char *target;
 		char *message;
 		struct irc_server *server;
 	} *ctx = param;
-	struct irc_channel *channel = item;
 
 	if(!stricmp(ctx->target, "all") || is_channel_in_group(channel, ctx->target)) {
 		if(!irc_say(&irccore_server, channel->name, "%s", ctx->message)) {
@@ -285,7 +306,7 @@ unsigned int irc_broadcast_group(struct irc_server *server, char *group, char *m
 		struct irc_server *server;
 	} ctx = { 0, group, message, server };
 
-	collection_iterate(server->channels, broadcast_group_callback, &ctx);
+	collection_iterate(server->channels, (collection_f)broadcast_group_callback, &ctx);
 
 	return ctx.success;
 }
@@ -325,8 +346,7 @@ unsigned int irc_lua_raw(const char *message) {
 }
 
 /* used by irc_channel_exist */
-static unsigned int channel_exist_callback(struct collection *c, void *item, void *param) {
-	struct irc_channel *channel = item;
+static unsigned int channel_exist_callback(struct collection *c, struct irc_channel *channel, void *param) {
 	struct {
 		unsigned int success;
 		struct irc_server *server;
@@ -348,12 +368,12 @@ unsigned int irc_channel_exist(struct irc_server *server, char *channel_name) {
 		char *channel_name;
 	} ctx = { 0, server, channel_name };
 
-	collection_iterate(server->channels, channel_exist_callback, &ctx);
+	collection_iterate(server->channels, (collection_f)channel_exist_callback, &ctx);
 	
 	return ctx.success;
 }
 
-static unsigned int call_command_handlers(struct collection *c, void *item, void *param) {
+static unsigned int call_command_handlers(struct collection *c, struct irc_handler *handler, void *param) {
 	struct {
 		struct irc_server *server;
 		char *sender;
@@ -361,26 +381,40 @@ static unsigned int call_command_handlers(struct collection *c, void *item, void
 		unsigned int notice;
 		char *args;
 	} *ctx = param;
-	char *handler = item;
 	lua_Number n;
 	struct irc_message m = { ctx->server, ctx->sender, ctx->target, ctx->args };
 	unsigned int err, i;
 	char *errval;
 	char *errmsg;
-
-	lua_pushstring(L, handler);
+	
+	if((handler->src == IRC_SOURCE_NOTICE) && !ctx->notice) {
+		/* want from notice but comming from somewhere else */
+		return 1;
+	}
+	
+	if((handler->src == IRC_SOURCE_CHANNEL) && (*ctx->target != '#')) {
+		/* want from channel but comming from private */
+		return 1;
+	}
+	
+	if((handler->src == IRC_SOURCE_PRIVATE) && (*ctx->target == '#')) {
+		/* want from private but comming from channel */
+		return 1;
+	}
+	
+	lua_pushstring(L, handler->handler);
 	lua_gettable(L, LUA_GLOBALSINDEX);
-
+	
 	/* make sure the function has been found */
 	if(!lua_isfunction(L, -1)) {
-		IRC_DBG("\"%s\" is not a function", handler);
+		IRC_DBG("\"%s\" is not a function", handler->handler);
 		lua_pop(L, 1);
 		return 1;
 	}
-
+	
 	/* push the parameters */
 	tolua_pushusertype(L, &m, "irc_message");
-
+	
 	err = lua_pcall(L, 1, 1, 0);
 	if(err) {
 		/*
@@ -396,7 +430,7 @@ static unsigned int call_command_handlers(struct collection *c, void *item, void
 		errmsg = (char*)lua_tostring(L, -1);
 
 		IRC_DBG("error catched:");
-		IRC_DBG("  --> function: %s", handler);
+		IRC_DBG("  --> function: %s", handler->handler);
 		IRC_DBG("  --> error value: %s", errval);
 		IRC_DBG("  --> error message: %s", errmsg);
 
@@ -409,7 +443,7 @@ static unsigned int call_command_handlers(struct collection *c, void *item, void
 	} else {
 		/* make sure the return value is a number */
 		if(!lua_isnumber(L, -1)) {
-			IRC_DBG("Returned non-number type from %s, dropping.", handler);
+			IRC_DBG("Returned non-number type from %s, dropping.", handler->handler);
 			lua_pop(L, 1);
 			return 1;
 		}
@@ -417,11 +451,56 @@ static unsigned int call_command_handlers(struct collection *c, void *item, void
 		n = lua_tonumber(L, -1);
 
 		if(!(int)n) {
-			IRC_DBG("Got error from %s", handler);
+			IRC_DBG("Got error from %s", handler->handler);
 		}
 	}
 	lua_pop(L, 1); /* pops the return value */
+	
+	return 1;
+}
 
+int irc_tree_cmp(struct irc_handler *a, struct irc_handler *b) {
+	
+	return stricmp(a->handler, b->handler);
+}
+
+static void irc_handler_obj_destroy(struct irc_handler *handler) {
+	
+	collectible_destroy(handler);
+	
+	free(handler->handler);
+	handler->handler = NULL;
+	
+	return;
+}
+
+unsigned int irc_tree_add(struct collection *branches, char *trigger, char *handler, irc_source src) {
+	struct irc_handler *handler_obj;
+		
+	handler_obj = malloc(sizeof(struct irc_handler));
+	if(!handler_obj) {
+		IRC_DBG("Memory error");
+		return 0;
+	}
+	
+	obj_init(&handler_obj->o, handler_obj, (obj_f)irc_handler_obj_destroy);
+	collectible_init(handler_obj);
+	
+	handler_obj->handler = strdup(handler);
+	if(!handler_obj->handler) {
+		IRC_DBG("Memory error");
+		free(handler_obj);
+		return 0;
+	}
+	handler_obj->src = src;
+	
+	if(!tree_add(branches, trigger, &handler_obj->c, (tree_f)irc_tree_cmp)) {
+		IRC_DBG("Could not add handler object to tree");
+		free(handler_obj->handler);
+		free(handler_obj);
+		return 0;
+	}
+	
 	return 1;
 }
 
@@ -462,7 +541,7 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 	}
 
 	/* call all handlers found for that command */
-	collection_iterate(handlers, call_command_handlers, &ctx);
+	collection_iterate(handlers, (collection_f)call_command_handlers, &ctx);
 
 	if(*target != '#') free(ctx.target);
 
@@ -472,8 +551,7 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 }
 
 /* used by irc_channel_exist */
-static unsigned int mark_channel_joined_callback(struct collection *c, void *item, void *param) {
-	struct irc_channel *channel = item;
+static int mark_channel_joined_callback(struct collection *c, struct irc_channel *channel, void *param) {
 	struct {
 		unsigned int success;
 		struct irc_server *server;
@@ -498,13 +576,15 @@ static unsigned int mark_channel_joined(struct irc_server *server, char *channel
 		unsigned int joined;
 	} ctx = { 0, server, channel_name, joined };
 
-	collection_iterate(server->channels, mark_channel_joined_callback, &ctx);
+	collection_iterate(server->channels, (collection_f)mark_channel_joined_callback, &ctx);
 	
 	return ctx.success;
 }
 
 //"sender" changes its nick for "nick"
 static int irc_handle_nick(struct irc_server *server, char* sender, char* nick) {
+	struct event_parameter params[2];
+	struct irc_nick_change ctx;
 	unsigned int i;
 
 	/* get the sender's nick alone */
@@ -522,6 +602,20 @@ static int irc_handle_nick(struct irc_server *server, char* sender, char* nick) 
 		}
 	}
 
+	/* raise the event */
+	ctx.hostname = sender;
+	ctx.nick = nick;
+
+	params[0].ptr = server;
+	params[0].type = "irc_server";
+
+	params[1].ptr = &ctx;
+	params[1].type = "irc_nick_change";
+
+	IRC_DBG("onIrcNickChange (%s, %s)", sender, nick);
+
+	event_raise("onIrcNickChange", 2, &params[0]);
+
 	return 1;
 }
 
@@ -531,6 +625,8 @@ static int irc_handle_nick(struct irc_server *server, char* sender, char* nick) 
 //if we know the channel we'll set joined to TRUE
 //if we don't know it we'll leave the channel
 static int irc_handle_join(struct irc_server *server, char* sender, char* channel) {
+	struct event_parameter params[2];
+	struct irc_join_channel ctx;
 	unsigned int i;
 
 	/* get the sender's nick alone */
@@ -543,12 +639,29 @@ static int irc_handle_join(struct irc_server *server, char* sender, char* channe
 			mark_channel_joined(server, channel, 1);
 
 			/* Advertise "powered by www.xFTPd.com" */
-			irc_say(server, channel, "This server is powered by www.xFTPd.com!");
+#ifndef NO_IRC_ADVERTISEMENT
+			irc_say(server, channel, "This server is powered by www.xFTPd.com !");
+#endif
 		} else {
 			/* we're not on that channel - leave it */
 			irc_raw(server, "PART %s\n", channel);
+			return 1;
 		}
 	}
+	
+	/* raise the event */
+	ctx.hostname = sender;
+	ctx.channel = channel;
+
+	params[0].ptr = server;
+	params[0].type = "irc_server";
+
+	params[1].ptr = &ctx;
+	params[1].type = "irc_join_channel";
+
+	IRC_DBG("onIrcJoinChannel (%s, %s)", sender, channel);
+
+	event_raise("onIrcJoinChannel", 2, &params[0]);
 
 	return 1;
 }
@@ -558,6 +671,8 @@ static int irc_handle_join(struct irc_server *server, char* sender, char* channe
 //if it is we'll check wich channel it is
 //if we know the channel we'll set joined to FALSE
 static int irc_handle_part(struct irc_server *server, char* sender, char* channel) {
+	struct event_parameter params[2];
+	struct irc_part_channel ctx;
 	unsigned int i;
 
 	/* get the sender's nick alone */
@@ -567,6 +682,20 @@ static int irc_handle_part(struct irc_server *server, char* sender, char* channe
 	if(!strnicmp(sender, server->nickname, i)) {
 		mark_channel_joined(server, channel, 0);
 	}
+	
+	/* raise the event */
+	ctx.hostname = sender;
+	ctx.channel = channel;
+
+	params[0].ptr = server;
+	params[0].type = "irc_server";
+
+	params[1].ptr = &ctx;
+	params[1].type = "irc_part_channel";
+
+	IRC_DBG("onIrcPartChannel (%s, %s)", sender, channel);
+
+	event_raise("onIrcPartChannel", 2, &params[0]);
 
 	return 1;
 }
@@ -576,16 +705,48 @@ static int irc_handle_part(struct irc_server *server, char* sender, char* channe
 //if it is, we search for the channel
 //if we know the channel we set joined to FALSE
 static int irc_handle_kick(struct irc_server *server, char* sender, char* user, char* channel) {
+	struct event_parameter params[2];
+	struct irc_kick_user ctx;
 	
 	if(!stricmp(user, server->nickname)) {
 		mark_channel_joined(server, channel, 0);
 	}
+	
+	/* raise the event */
+	ctx.hostname = sender;
+	ctx.victim = user;
+	ctx.channel = channel;
+
+	params[0].ptr = server;
+	params[0].type = "irc_server";
+
+	params[1].ptr = &ctx;
+	params[1].type = "irc_kick_user";
+
+	IRC_DBG("onIrcKickUser (%s, %s, %s)", sender, user, channel);
+
+	event_raise("onIrcKickUser", 2, &params[0]);
 
 	return 1;
 }
 
 //"sender" quits the server
 static int irc_handle_quit(struct irc_server *server, char* sender) {
+	struct event_parameter params[2];
+	struct irc_quit ctx;
+	
+	/* raise the event */
+	ctx.hostname = sender;
+
+	params[0].ptr = server;
+	params[0].type = "irc_server";
+
+	params[1].ptr = &ctx;
+	params[1].type = "irc_quit";
+
+	IRC_DBG("onIrcQuit (%s)", sender);
+
+	event_raise("onIrcQuit", 2, &params[0]);
 
 	return 1;
 }
@@ -736,22 +897,20 @@ static unsigned int parse_line_from_master(struct irc_server *server) {
 }
 
 /* send a line to the server (and only one line) */
-static unsigned int send_from_queue_callback(struct collection *c, void *item, void *param) {
-	char *line = item;
+static int send_from_queue_callback(struct collection *c, struct ftpd_collectible_line *l, void *param) {
 	struct {
 		unsigned int success;
 		struct irc_server *server;
 		struct collection *queue;
 	} *ctx = param;
-	unsigned int size = strlen(line);
+	unsigned int size = strlen(l->line);
 
-	if(send(ctx->server->s, line, size, 0) != size) {
-		IRC_DBG("ERROR: Line size mismatch sent size\n");
+	if(send(ctx->server->s, l->line, size, 0) != size) {
+		IRC_DBG("ERROR: Line size mismatch sent size");
 		ctx->success = 0;
 	}
 
-	collection_delete(ctx->queue, line);
-	free(line);
+	ftpd_line_destroy(l);
 
 	/* set new timestamp */
 	ctx->server->timestamp = time_now();
@@ -767,14 +926,13 @@ static unsigned int send_from_queue(struct irc_server *server, struct collection
 		struct collection *queue;
 	} ctx = { 1, server, queue };
 	
-	collection_iterate(queue, send_from_queue_callback, &ctx);
+	collection_iterate(queue, (collection_f)send_from_queue_callback, &ctx);
 
 	return ctx.success;
 }
 
 /* send data from the channel queue to the server */
-static unsigned int send_from_channel_queue_callback(struct collection *c, void *item, void *param) {
-	struct irc_channel *channel = item;
+static int send_from_channel_queue_callback(struct collection *c, struct irc_channel *channel, void *param) {
 	struct {
 		unsigned int success;
 		struct irc_server *server;
@@ -783,7 +941,11 @@ static unsigned int send_from_channel_queue_callback(struct collection *c, void 
 	if(!channel->joined) {
 		if(timer(channel->timestamp) > 5000) {
 			/* hardcoded 5 secondes between JOIN queries */
-			irc_raw(ctx->server, "JOIN %s %s\n", channel->name, channel->key);
+			irc_raw(ctx->server, "JOIN %s%s%s\n", channel->name,
+				channel->key ? " " : "",
+				channel->key ? channel->key : ""
+			);
+			IRC_DBG("joining channel %s with key %s", channel->name, channel->key ? channel->key : ""); 
 			channel->timestamp = time_now();
 		}
 		/* return 1 so we'll still try to send a message if any exists */
@@ -813,7 +975,7 @@ static unsigned int send_from_channels(struct irc_server *server) {
 	} ctx = { 1, server };
 
 	/* try to send data from any channel queue */
-	collection_iterate(server->channels, send_from_channel_queue_callback, &ctx);
+	collection_iterate(server->channels, (collection_f)send_from_channel_queue_callback, &ctx);
 
 	return ctx.success;
 }
@@ -821,6 +983,7 @@ static unsigned int send_from_channels(struct irc_server *server) {
 int irccore_server_write(int fd, struct irc_server *server) {
 
 	if(!server->connected) {
+		struct event_parameter params[1];
 		unsigned int i;
 
 		IRC_DBG("Now connected to %s:%u.", server->address, server->port);
@@ -841,6 +1004,15 @@ int irccore_server_write(int fd, struct irc_server *server) {
 			server->address,
 			server->realname
 		);
+
+		
+		/* raise the event */
+		params[0].ptr = server;
+		params[0].type = "irc_server";
+
+		IRC_DBG("onIrcConnect");
+
+		event_raise("onIrcConnect", 1, &params[0]);
 
 		server->connected = 1;
 		return 1;
@@ -933,10 +1105,10 @@ int irccore_load_config() {
 
 		sprintf(buffer, "xftpd.irc.channel(%u).key", i);
 		key = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
-		if(!key) {
+		/*if(!key) {
 			free(name);
 			break;
-		}
+		}*/
 		sprintf(buffer, "xftpd.irc.channel(%u).groups", i);
 		groups = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
 
@@ -1060,10 +1232,9 @@ int irc_connect(struct irc_server *server) {
 	return 1;
 }
 
-static unsigned int irc_disconnect_exit_channels(struct collection *c, void *item, void *param) {
-	struct irc_channel *channel = item;
+static int irc_disconnect_exit_channels(struct collection *c, struct irc_channel *channel, void *param) {
 
-	/* we do not free the channel queue so when we are reconnected the sending is resumed */
+	/* we do not free the channel queue so when we are reconnected the sending will be resumed */
 
 	channel->joined = 0;
 
@@ -1074,14 +1245,10 @@ static unsigned int irc_disconnect_exit_channels(struct collection *c, void *ite
 void irc_disconnect(struct irc_server *server) {
 
 	/* mark all channels as not joined */
-	collection_iterate(server->channels, irc_disconnect_exit_channels, NULL);
+	collection_iterate(server->channels, (collection_f)irc_disconnect_exit_channels, NULL);
 
 	/* empty the server message queue */
-	while(collection_size(server->queue)) {
-		void *first = collection_first(server->queue);
-		free(first);
-		collection_delete(server->queue, first);
-	}
+	collection_empty(server->queue);
 
 	signal_clear(server->group);
 
@@ -1099,10 +1266,10 @@ int irccore_init() {
 
 	IRC_DBG("Loading...");
 
-	irc_hooks = collection_new();
+	irc_hooks = collection_new(C_CASCADE);
 
-	irccore_server.queue = collection_new();
-	irccore_server.channels = collection_new();
+	irccore_server.queue = collection_new(C_CASCADE);
+	irccore_server.channels = collection_new(C_CASCADE);
 
 	/* give default values */
 	irccore_server.connected = 0;
@@ -1110,7 +1277,7 @@ int irccore_init() {
 	irccore_server.address = NULL;
 	irccore_server.port = 0;
 	irccore_server.s = -1;
-	irccore_server.group = collection_new();
+	irccore_server.group = collection_new(C_CASCADE);
 
 	irccore_server.nickname = NULL;
 	irccore_server.realname = NULL;

@@ -56,12 +56,59 @@
 
 extern struct irc_server irccore_server;
 extern struct collection *irc_hooks;
-extern struct collection *irc_hooks;
 
+typedef enum {
+	IRC_SOURCE_ANY,
+	IRC_SOURCE_CHANNEL,
+	IRC_SOURCE_PRIVATE,
+	IRC_SOURCE_NOTICE,
+} irc_source;
+
+struct irc_handler {
+	struct obj o;
+	struct collectible c;
+	
+	char *handler;
+	irc_source src;
+};
+
+typedef struct irc_nick_change irc_nick_change;
+struct irc_nick_change {
+	char *hostname;
+	char *nick;
+} __attribute__((packed));
+
+typedef struct irc_join_channel irc_join_channel;
+struct irc_join_channel {
+	char *hostname;
+	char *channel;
+} __attribute__((packed));
+
+typedef struct irc_part_channel irc_part_channel;
+struct irc_part_channel {
+	char *hostname;
+	char *channel;
+} __attribute__((packed));
+
+typedef struct irc_kick_user irc_kick_user;
+struct irc_kick_user {
+	char *hostname;
+	char *victim;
+	char *channel;
+} __attribute__((packed));
+
+typedef struct irc_quit irc_quit;
+struct irc_quit {
+	char *hostname;
+} __attribute__((packed));
+
+typedef struct irc_channel irc_channel;
 struct irc_channel {
+	struct obj o;
+	struct collectible c;
 
 	unsigned long long int timestamp; /* last JOIN command timestamp */
-	unsigned int joined;
+	char joined;
 
 	/* collection of the name of all groups the channel is member of */
 	struct collection *groups;
@@ -77,9 +124,11 @@ struct irc_ctx;
 
 typedef struct irc_server irc_server;
 struct irc_server {
-	struct irc_ctx *irc_ctx;
+	//struct obj o;
+	
+	//struct irc_ctx *irc_ctx;
 
-	unsigned int connected;
+	char connected;
 
 	struct collection *channels;
 
@@ -130,5 +179,7 @@ unsigned int irc_lua_say(char *channel, char *message);
 unsigned int irc_lua_broadcast(char *target, char *message);
 
 unsigned int irc_broadcast_group(struct irc_server *server, char *group, char *message);
+
+unsigned int irc_tree_add(struct collection *branches, char *trigger, char *handler, irc_source src);
 
 #endif /* __IRCCORE_H */

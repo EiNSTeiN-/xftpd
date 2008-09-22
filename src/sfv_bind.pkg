@@ -36,11 +36,15 @@
 $#include "sfv.h"
 
 typedef struct {
+	collectible c @ collectible;
+	
 	unsigned int crc @ checksum;
 	const char filename[1];
 } sfv_entry;
 
 typedef struct {
+	collectible c @ collectible;
+	
 	_collection *entries; /* collection of sfv_entry structures */
 	vfs_element *element;
 } sfv_ctx;
@@ -51,7 +55,7 @@ module sfv {
 	sfv_entry *sfv_get_entry @ get(sfv_ctx *sfv, char *filename);
 	void sfv_delete @ clean(sfv_ctx *sfv);
 
-	sfv_entry *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	//sfv_entry *collection_next @ iterate(_collection *c, unsigned int *iterator);
 }
 
 

@@ -139,6 +139,18 @@ typedef enum {
 	MODE_COMPRESSED
 } ftpd_mode;
 
+struct ftpd_collectible_line {
+	struct obj o;
+	struct collectible c;
+
+	char line[];
+	
+} __attribute__((packed));
+
+
+struct ftpd_collectible_line *ftpd_line_new(char *line);
+void ftpd_line_destroy(struct ftpd_collectible_line *l);
+
 struct slave_listen_request {
 	unsigned long long int xfer_uid; /* shared with the transfer request */
 } __attribute__((packed));
@@ -148,8 +160,8 @@ struct slave_transfer_request {
 	
 	unsigned int ip; /* needed for active connections */
 	unsigned short port; /* needed for active connections */
-	unsigned int upload; /* 0 on downloads */
-	unsigned int passive; /* 0 for active transfers */
+	char upload; /* 0 on downloads */
+	char passive; /* 0 for active transfers */
 	unsigned long long int restart; /* restart point */
 	
 	/* TODO: handle transfer modes/structure types/etc */
@@ -166,7 +178,7 @@ struct xfer_ctx {
 
 	unsigned long long int restart; /* tells where to restart the RETR */
 
-	unsigned int upload; /* 0 for download */
+	char upload; /* 0 for download */
 	//unsigned int busy; /* 1 while the slave is busy uploading/downloading */
 
 	/* reference to the vfs element we are operating on */
@@ -192,20 +204,21 @@ struct list_ctx {
 typedef struct ftpd_client_ctx ftpd_client;
 struct ftpd_client_ctx {
 	struct obj o;
+	struct collectible c;
 
 	unsigned long long int timestamp; /* time at wich the client connected */
 	unsigned long long int last_timestamp; /* time at wich the last command was sent */
-	unsigned int connected;
+	char connected;
 
-	//unsigned int locked;
-	//unsigned int deleted;
+	/* volatile config file, not backed up on disk */
+	struct config_file *volatile_config;
 
 	struct collection *group;
 	int fd;						/* communication socket */
 
 	char username[32];			/* username used to authenticate */
 	struct user_ctx *user;		/* structure referencing the user for this connection */
-	unsigned int logged;		/* true if the user is authenticated */
+	char logged;				/* true if the user is authenticated */
 
 	struct vfs_element *working_directory;/* directory currently browsed by the user */
 	
@@ -222,25 +235,21 @@ struct ftpd_client_ctx {
 	ftpd_structure structure;	/* data structure type */
 	ftpd_mode mode;				/* data transfer mode */
 
-	unsigned int slave_xfer;	/* PRET has been issued for RETR/STOR */
-	unsigned int passive;		/* passive or active socket */
-	unsigned int ready;			/* ready to transfer or not */
+	char slave_xfer;			/* PRET has been issued for RETR/STOR */
+	char passive;				/* passive or active socket */
+	char ready;					/* ready to transfer or not */
 
 	unsigned int ip;			/* ip for active socket */
 	unsigned short port;		/* port for active socket */
 
-	struct list_ctx data_ctx; /* tracking for master transfers LIST/NLST */
-	struct xfer_ctx xfer; /* tracking for slave transfers:  */
+	struct list_ctx data_ctx;	/* tracking for master transfers LIST/NLST */
+	struct xfer_ctx xfer;		/* tracking for slave transfers:  */
 
-	//int destroyed;
 } __attribute__((packed));
-
-
-
 
 struct xfer_ctx *ftpd_lua_client_to_xfer(struct ftpd_client_ctx *ctx);
 
-unsigned int ftpd_inject_listing(struct ftpd_client_ctx *ctx, unsigned int type, const char *name, const char *owner);
+unsigned int ftpd_inject_listing(struct ftpd_client_ctx *ctx, char type, const char *name, const char *owner);
 unsigned int ftpd_inject_symlink(struct ftpd_client_ctx *ctx, const char *target, const char *name, const char *owner);
 
 unsigned int ftpd_wipe(struct vfs_element *element);
@@ -254,9 +263,9 @@ struct slave_transfer_request *ftpd_transfer(
 	struct vfs_element *file,
 	unsigned int ip,
 	unsigned short port,
-	unsigned int passive,
-	unsigned int upload,
-	unsigned int restart,
+	char passive,
+	char upload,
+	unsigned long long int restart,
 	unsigned int *length
 );
 

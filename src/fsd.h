@@ -40,7 +40,7 @@
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_SLAVE
-//#  define DEBUG_SLAVE_DIALOG
+#  define DEBUG_SLAVE_DIALOG
 #endif
 
 #ifdef DEBUG_SLAVE
@@ -65,8 +65,22 @@
 
 #include "collection.h"
 
+struct slave_main_ctx {
+	char slave_is_dead; /* is the slave dead ? */
+	char connected;
+	struct io_context io;
+	struct collection *group;
+
+	int proxy_connected;
+	struct packet *query;
+	struct packet *reply;
+	unsigned int filledsize;
+} __attribute__((packed));
 
 struct slave_xfer {
+	struct obj o;
+	struct collectible c;
+	
 	/* the uid is shared with the master. it is used to
 		identify the xfer */
 	unsigned long long int uid;
@@ -81,14 +95,12 @@ struct slave_xfer {
 	unsigned short port;
 	unsigned long long int listen_uid;
 
-	unsigned int passive; /* 1 on passive (listening) connections */
-	unsigned int upload; /* 0 on downloads */
+	char passive; /* 1 on passive (listening) connections */
+	char upload; /* 0 on downloads */
 	unsigned long long int restart; /* where to restart the file transfer */
 
-	unsigned int buffersize;
-
-	int completed; /* Operation completed. */
-	int connected; /* connected (socket init is done) */
+	char completed; /* Operation completed. */
+	char connected; /* connected (socket init is done) */
 	struct collection *group;
 	int fd;
 
@@ -100,8 +112,34 @@ struct slave_xfer {
 	unsigned long long int xfered; /* xfered size */
 	unsigned int checksum; /* checksum for the transfer */
 
-	unsigned int ready; /* ready to transfer the file? */
+	char ready; /* ready to transfer the file? */
 	struct file_map *file;
+	
+	char *buffer;
+	unsigned int buffersize;
+	struct adio_operation *op; /* asyncrhonous disk i/o operation's reference */
+	unsigned int op_length; /* number of bytes that are implied in the current operation */
+	unsigned int op_done; /* number of bytes processed by the adio_operation */
+	/*
+	1. For write (upload) operations:
+		Number of bytes that were written to the buffer from the socket.
+		Always >= op_length && <= buffersize
+		To minimise the waiting when data is available but we can't
+		write it to disk, we write it to the buffer at &buffer[op_length]
+		up to &buffer[buffersize], then when the current write operation
+		is complete (op_done == op_length) we move all the extra data to
+		&buffer[0] and we restart the write operation with the current
+		contents of the buffer.
+	2. For read (download) operations:
+		Number of bytes that were written to the socket from the buffer.
+		Always <= op_done.
+		We always try to read the smallest value between xfer->file->size
+		and xfer->buffersize in this i/o operation; the pointer will most
+		probably always be near the value of op_done.
+	*/
+	unsigned int op_pointer;
+	
+	unsigned char op_active;
 
 	/* uid of the asynch command from wich the transfer
 		request arrived, we will need it to send the
@@ -129,23 +167,55 @@ struct file_list_entry {
 	char name[1];
 } __attribute__((packed));
 
+typedef enum {
+	SLAVE_PLATFORM_WIN32,
+} slave_platform;
+
 struct slave_hello_data {
+	unsigned char platform; /* platform version of the slave */
+	unsigned long long int rev; /* the revision number inform us on the available fields */
 	unsigned long long int diskfree; /* this is the total of all mapped disks */
 	unsigned long long int disktotal;
 	unsigned long long int now; /* the now() of the slave at the moment it sends the hello packet */
 	char name[1];
 } __attribute__((packed));
 
+struct fsd_sfv_entry {
+	struct obj o;
+	struct collectible c;
+	
+	unsigned int crc;
+	char filename[];
+} __attribute__((packed));
+
+struct file_map;
+struct fsd_sfv_ctx {
+	struct obj o;
+	struct collectible c;
+	
+	struct collection *entries; /* collection of fsd_sfv_entry structures */
+	struct file_map *file;
+} __attribute__((packed));
+
+unsigned int sfv_parse(struct file_map *file);
+struct fsd_sfv_entry *fsd_sfv_add_entry(struct fsd_sfv_ctx *sfv, char *filename, unsigned int crc);
+struct fsd_sfv_entry *fsd_sfv_get_entry(struct fsd_sfv_ctx *sfv, char *filename);
+void fsd_sfv_delete(struct fsd_sfv_ctx *sfv);
+
 struct file_map {
+	struct obj o;
+	struct collectible c;
+	
 	struct disk_map *disk; /* points to the disk on wich is the file */
 
 	/* infos for when the file is open */
 	struct {
 		/* reference count. when 0 is reached, the
 			file is closed and the buffer is free'd */
-		unsigned int refcount; 
+		unsigned int refcount;
 		unsigned int upload; /* 0 when downloading */
-		int stream;
+		//int stream;
+		struct adio_file *adio; /* asynchronous disk i/o structure */
 	} io;
 
 	unsigned long long int size; /* file size in bytes */
@@ -153,11 +223,16 @@ struct file_map {
 	/* TODO: crc checksum, ... */
 
 	struct collection *xfers; /* current xfers for this file, collection of struct struct slave_xfer */
+	
+	struct fsd_sfv_ctx *sfv;
 
 	char name[1];	/* name relative to the disk's path like hum\abc\file.bin */
 } __attribute__((packed));
 
 struct disk_map {
+	struct obj o;
+	struct collectible c;
+	
 	unsigned long long int diskfree; /* updated after each file operation */
 	unsigned long long int disktotal;
 	

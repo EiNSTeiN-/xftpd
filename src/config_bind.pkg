@@ -36,6 +36,7 @@
 $#include "config.h"
 
 typedef struct {
+	collectible c @ collectible;
 	int modified; /* since the last save */
 
 	char *name;
@@ -43,6 +44,8 @@ typedef struct {
 } config_field;
 
 typedef struct {
+	collectible c @ collectible;
+	
 	unsigned long long int timeout; /* maximum time between each saves */
 	unsigned long long int savetime; /* last time the file was saved to disk */
 	int modified; /* 1 if any field was modified since the last save */

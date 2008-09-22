@@ -32,7 +32,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
- 
+
 #include <windows.h>
 
 #include "asynch.h"
@@ -42,6 +42,8 @@
 static unsigned long long int asynch_next_uid = 0;
 
 static void asynch_obj_destroy(struct slave_asynch_command *cmd) {
+	
+	collectible_destroy(cmd);
 
 	if(collection_find(cmd->cnx->asynch_queries, cmd)) {
 		collection_delete(cmd->cnx->asynch_queries, cmd);
@@ -78,6 +80,8 @@ struct slave_asynch_command *asynch_new(
 	}
 
 	obj_init(&cmd->o, cmd, (obj_f)asynch_obj_destroy);
+	collectible_init(cmd);
+	
 	cmd->cnx = cnx;
 	//cmd->destroyed = 0;
 	cmd->send_time = 0;
@@ -147,7 +151,7 @@ unsigned int asynch_match(struct slave_connection *cnx, struct packet *p) {
 
 	if(!cmd) {
 		/* This is not critical, we stay connected when it happens */
-		SLAVES_DBG("Received a query that could not be matched: %I64u", p->uid);
+		SLAVES_DBG("Received a query that could not be matched: %I64u / type: %u / length: %u", p->uid, p->type, p->size);
 		return 1;
 	}
 

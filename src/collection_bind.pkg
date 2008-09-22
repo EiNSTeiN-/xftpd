@@ -39,14 +39,29 @@ typedef struct {
 	// this should stay an opaque structure to lua
 } _collection;
 
+typedef struct {
+	// this should stay an opaque structure to lua
+} collectible;
+
+typedef struct {
+	// this should stay an opaque structure to lua
+} collection_iterator;
+
+typedef enum {
+	C_NONE,
+	C_CASCADE
+} collection_destroy_type;
+
 module collection {
-	_collection *collection_new @ new();
+	_collection *collection_new @ new(collection_destroy_type destroy_type = C_NONE);
 	void collection_destroy @ destroy(_collection *c);
 	int collection_size @ size(_collection *c);
 	
-	int collection_add @ add(_collection *c, collection_item *item);
-	int chk_collection_delete @ delete(_collection *c, collection_item *item);
+	int collection_c_add @ add(_collection *c, collectible *item);
+	int chk_collection_c_delete @ delete(_collection *c, collectible *item);
 	
-	collection_item *collection_next @ iterate(_collection *c, unsigned int *iter);
-	unsigned int collection_find @ find(_collection *c, collection_item *item);
+	collection_iterator *collection_new_iterator @ iterator(_collection *c);
+	collectible *collection_next @ iterate(_collection *c, collection_iterator *iter);
+
+	unsigned int collection_c_find @ find(_collection *c, collectible *item);
 }

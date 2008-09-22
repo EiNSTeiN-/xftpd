@@ -98,6 +98,10 @@ typedef enum {
 	IO_UNUSED_5,
 
 	/* ... */
+	IO_SFVLOG,
+
+	/* update query */
+	IO_UPDATE,
 
 } io_packet_type;
 

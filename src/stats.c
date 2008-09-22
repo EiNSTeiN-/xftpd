@@ -50,12 +50,11 @@
 #include "main.h"
 #include "asynch.h"
 
-static unsigned int probe_stats_update_xfer(struct collection *c, void *item, void *param) {
+static int probe_stats_update_xfer(struct collection *c, struct ftpd_client_ctx *client, void *param) {
 	struct {
 		struct slave_connection *cnx;
 		struct stats_xfer *stats;
 	} *ctx = param;
-	struct ftpd_client_ctx *client = item;
 
 	if((client->xfer.uid != -1) && (client->xfer.uid == ctx->stats->uid)) {
 
@@ -82,8 +81,7 @@ static unsigned int probe_stats_update_xfer(struct collection *c, void *item, vo
 	return 1;
 }
 
-static unsigned int probe_stats_update_mirror(struct collection *c, void *item, void *param) {
-	struct mirror_ctx *mirror = item;
+static int probe_stats_update_mirror(struct collection *c, struct mirror_ctx *mirror, void *param) {
 	struct {
 		struct slave_connection *cnx;
 		struct stats_xfer *stats;
@@ -157,16 +155,15 @@ static unsigned int probe_stats_callback(struct slave_connection *cnx, struct sl
 	for(i=0;i<xfers_count;i++) {
 		ctx.stats = &xstats[i];
 		/* the stat may be about a xfer or a mirror, no way to know */
-		collection_iterate(cnx->xfers, probe_stats_update_xfer, &ctx);
-		collection_iterate(cnx->mirror_from, probe_stats_update_mirror, &ctx);
-		collection_iterate(cnx->mirror_to, probe_stats_update_mirror, &ctx);
+		collection_iterate(cnx->xfers, (collection_f)probe_stats_update_xfer, &ctx);
+		collection_iterate(cnx->mirror_from, (collection_f)probe_stats_update_mirror, &ctx);
+		collection_iterate(cnx->mirror_to, (collection_f)probe_stats_update_mirror, &ctx);
 	}
 
 	return 1;
 }
 
-static unsigned int probe_stats_on_slave(struct collection *c, void *item, void *param) {
-	struct slave_connection *cnx = item;
+static int probe_stats_on_slave(struct collection *c, struct slave_connection *cnx, void *param) {
 	struct slave_asynch_command *cmd;
 
 	/* put some time between now and the last probe */
@@ -191,7 +188,7 @@ static unsigned int probe_stats_on_slave(struct collection *c, void *item, void 
 	to thier last probe time */
 unsigned int probe_stats() {
 
-	collection_iterate(connected_slaves, probe_stats_on_slave, NULL);
+	collection_iterate(connected_slaves, (collection_f)probe_stats_on_slave, NULL);
 
 	return 1;
 }

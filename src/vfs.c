@@ -33,6 +33,8 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/* virtual file system */
+
 #include <windows.h>
 #include <io.h>
 #include <stdio.h>
@@ -55,19 +57,20 @@ struct collection *sections = NULL;
 
 struct vfs_element *vfs_root = NULL;
 
+/*
 static unsigned int vfs_obj_destroy_leechers(struct collection *c, struct ftpd_client_ctx *client, void *param) {
 
 	ftpd_client_cleanup_data_connection(client);
 
 	return 1;
-}
+}*/
 
-static unsigned int vfs_obj_destroy_browsers(struct collection *c, struct ftpd_client_ctx *client, void *param) {
+//static unsigned int vfs_obj_destroy_browsers(struct collection *c, struct ftpd_client_ctx *client, void *param) {
 
 	/* Just delete the client without any warning. */
 
 	/* TODO: tell the client why he's been disconnected */
-
+/*
 	VFS_DBG("Disconnecting client(%08x) %s because he's browsing folder", (int)client, client->username);
 
 	ftpd_client_destroy(client);
@@ -95,18 +98,28 @@ static unsigned int vfs_obj_destroy_mirror(struct collection *c, struct mirror_c
 	mirror_cancel(mirror);
 
 	return 1;
-}
+}*/
 
 /* used by vfs_recursive_delete */
-static unsigned int vfs_obj_destroy_symlink(struct collection *c, struct vfs_element *element, void *param) {
+//static unsigned int vfs_obj_destroy_symlink(struct collection *c, struct vfs_element *element, void *param) {
 
 	/* delete the symlink element */
-	vfs_recursive_delete(element);
+/*	vfs_recursive_delete(element);
 
 	return 1;
-}
+}*/
 
 static void vfs_obj_destroy(struct vfs_element *element) {
+	
+	collectible_destroy(element);
+	
+	//VFS_DBG("destructing %s", element->name);
+
+	/* Before anything, propagate the destruction to all childs */
+	if(element->childs) {
+		collection_destroy(element->childs);
+		element->childs = NULL;
+	}
 
 	/*
 		Set the vroot of the slave to vfs_root
@@ -123,6 +136,11 @@ static void vfs_obj_destroy(struct vfs_element *element) {
 		element->nuke = NULL;
 	}
 
+	if(element->section) {
+		section_unlink_root(element->section, element);
+		element->section = NULL;
+	}
+
 	/* cleanup the data contexts of all leechers
 		and from the uploader, if any. */
 	if(element->uploader) {
@@ -131,67 +149,64 @@ static void vfs_obj_destroy(struct vfs_element *element) {
 	}
 
 	if(element->leechers) {
-		collection_iterate(element->leechers, (collection_f)vfs_obj_destroy_leechers, NULL);
+		//collection_iterate(element->leechers, (collection_f)vfs_obj_destroy_leechers, NULL);
 		collection_destroy(element->leechers);
 		element->leechers = NULL;
 	}
 
 	if(element->browsers) {
-		collection_iterate(element->browsers, (collection_f)vfs_obj_destroy_browsers, NULL);
+		//collection_iterate(element->browsers, (collection_f)vfs_obj_destroy_browsers, NULL);
 		collection_destroy(element->browsers);
 		element->browsers = NULL;
 	}
 
 	/* delete the available_from list */
 	if(element->available_from) {
-		collection_iterate(element->available_from, (collection_f)vfs_obj_destroy_available_from, element);
+		//collection_iterate(element->available_from, (collection_f)vfs_obj_destroy_available_from, element);
 		collection_destroy(element->available_from);
 		element->available_from = NULL;
 	}
 
 	/* delete the available_from list */
 	if(element->offline_from) {
-		collection_iterate(element->offline_from, (collection_f)vfs_obj_destroy_offline_from, element);
+		//collection_iterate(element->offline_from, (collection_f)vfs_obj_destroy_offline_from, element);
 		collection_destroy(element->offline_from);
 		element->offline_from = NULL;
 	}
 
 	/* cancel any associated mirrors */
 	if(element->mirror_from) {
-		collection_iterate(element->mirror_from, (collection_f)vfs_obj_destroy_mirror, NULL);
+		//collection_iterate(element->mirror_from, (collection_f)vfs_obj_destroy_mirror, NULL);
 		collection_destroy(element->mirror_from);
 		element->mirror_from = NULL;
 	}
 	if(element->mirror_to) {
-		collection_iterate(element->mirror_to, (collection_f)vfs_obj_destroy_mirror, NULL);
+		//collection_iterate(element->mirror_to, (collection_f)vfs_obj_destroy_mirror, NULL);
 		collection_destroy(element->mirror_to);
 		element->mirror_to = NULL;
 	}
 
 	/* if this is a symlink, we won't delete the file */
 	if(element->link_to) {
-		collection_delete(element->link_to->link_from, element);
+		//collection_delete(element->link_to->link_from, element);
 		element->link_to = NULL;
 	}
 
 	/* if this is a file, delete all associated symlinks  */
 	if(element->link_from) {
-		collection_iterate(element->link_from, (collection_f)vfs_obj_destroy_symlink, NULL);
+		//collection_iterate(element->link_from, (collection_f)vfs_obj_destroy_symlink, NULL);
 		collection_destroy(element->link_from);
 		element->link_from = NULL;
 	}
+	
+	/* decrease the size of the file, wich will recursively
+		decrease the size of all parent directories */
+	vfs_decrease_size(element, element->size);
 
-	/* delete the section when its root directory is deleted */
-	if(element->section) {
-		section_unlink_root(element->section, element);
-		element->section = NULL;
-	}
-
-	/* remove the childs collection (wich should empty) */
-	if(element->childs) {
-		collection_destroy(element->childs);
-		element->childs = NULL;
-	}
+	/* update the modification timestamp of the parent */
+	vfs_modify(element->parent, time_now());
+	
+	element->parent = NULL;
 
 	/* free some memory */
 	if(element->owner) {
@@ -204,11 +219,14 @@ static void vfs_obj_destroy(struct vfs_element *element) {
 	}
 
 	if(element->sfv) {
+		element->sfv->element = NULL;
 		sfv_delete(element->sfv);
 		element->sfv = NULL;
 	}
 
 	free(element);
+	
+	//VFS_DBG("destruction finished");
 
 	return;
 }
@@ -223,7 +241,8 @@ struct vfs_element *vfs_create_root() {
 	}
 
 	obj_init(&root->o, root, (obj_f)vfs_obj_destroy);
-	obj_debug(&root->o, 1);
+	//obj_debug(&root->o, 1);
+	collectible_init(root);
 
 	/* THE ROOT IS THE ONLY ONE WITH NO PARENT */
 	root->parent = NULL;
@@ -237,7 +256,7 @@ struct vfs_element *vfs_create_root() {
 	root->size = 0;
 	root->timestamp = 0;
 
-	root->childs = collection_new();
+	root->childs = collection_new(C_CASCADE);
 
 	root->offline_from = NULL;
 	root->available_from = NULL;
@@ -251,7 +270,7 @@ struct vfs_element *vfs_create_root() {
 	root->mirror_from = NULL;
 	root->mirror_to = NULL;
 
-	root->browsers = collection_new();
+	root->browsers = collection_new(C_CASCADE);
 
 	root->link_from = NULL;
 	root->link_to = NULL;
@@ -282,7 +301,7 @@ int vfs_init() {
 			return 0;
 	}
 
-	sections = collection_new();
+	sections = collection_new(C_CASCADE);
 
 	path = _fullpath(NULL, ".", 0);
 	if(!path) {
@@ -303,7 +322,7 @@ int vfs_init() {
 
 	handle = _findfirst(file, &fd);
 	if (handle == -1) {
-		SECTIONS_DBG("Couldn't load \"" SECTIONS_FOLDER "section.*\"\n");
+		SECTIONS_DBG("Couldn't load \"" SECTIONS_FOLDER "section.*\"");
 	} else {
 		do {
 			if(!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
@@ -324,6 +343,38 @@ int vfs_init() {
 	SECTIONS_DBG("%u section(s) has been loaded", collection_size(sections));
 	
 	return 1;
+}
+
+void section_obj_destroy(struct vfs_section *section) {
+	
+	collectible_destroy(section);
+
+	if(section->slaves) {
+		//collection_iterate(section->slaves, (collection_f)unlink_slaves_from_section, section);
+		collection_destroy(section->slaves);
+		section->slaves = NULL;
+	}
+
+	if(section->roots) {
+		//collection_iterate(section->roots, (collection_f)unlink_roots_from_section, section);
+		collection_destroy(section->roots);
+		section->roots = NULL;
+	}
+
+	if(section->config) {
+		remove(section->config->filename);
+		config_destroy(section->config);
+		section->config = NULL;
+	}
+
+	if(section->name) {
+		free(section->name);
+		section->name = NULL;
+	}
+
+	free(section);
+	
+	return;
 }
 
 struct vfs_section *section_load(const char *filename) {
@@ -362,6 +413,9 @@ struct vfs_section *section_load(const char *filename) {
 		free(name);
 		return NULL;
 	}
+	
+	obj_init(&section->o, section, (obj_f)section_obj_destroy);
+	collectible_init(section);
 
 	section->config = config_new(fullpath, SECTIONS_CONFIG_TIMEOUT);
 	free(fullpath);
@@ -377,8 +431,8 @@ struct vfs_section *section_load(const char *filename) {
 	collection_add(sections, section);
 
 	/* create the slaves collection */
-	section->slaves = collection_new();
-	section->roots = collection_new();
+	section->slaves = collection_new(C_NONE);
+	section->roots = collection_new(C_NONE);
 
 	roots = config_read(section->config, "roots", NULL);
 	_slaves = config_read(section->config, "slaves", NULL);
@@ -492,6 +546,9 @@ struct vfs_section *section_new(const char *name) {
 		free(fullpath);
 		return NULL;
 	}
+	
+	obj_init(&section->o, section, (obj_f)section_obj_destroy);
+	collectible_init(section);
 
 	section->config = config_new(fullpath, SECTIONS_CONFIG_TIMEOUT);
 	free(fullpath);
@@ -510,8 +567,8 @@ struct vfs_section *section_new(const char *name) {
 	}
 	config_write(section->config, "name", name);
 
-	section->roots = collection_new();
-	section->slaves = collection_new();
+	section->roots = collection_new(C_NONE);
+	section->slaves = collection_new(C_NONE);
 	collection_add(sections, section);
 
 	config_save(section->config);
@@ -619,7 +676,7 @@ unsigned int section_dump(struct vfs_section *section) {
 
 	return 1;
 }
-
+/*
 static unsigned int unlink_slaves_from_section(struct collection *c, struct slave_ctx *slave, struct vfs_section *section) {
 
 	section_unlink_slave(section, slave);
@@ -633,37 +690,31 @@ static unsigned int unlink_roots_from_section(struct collection *c, struct vfs_e
 
 	return 1;
 }
+*/
+unsigned int section_destroy(struct vfs_section *section) {
+
+	if(!section) {
+		SECTIONS_DBG("section == NULL");
+		return 0;
+	}
+
+	obj_destroy(&section->o);
+
+	return 1;
+}
 
 unsigned int section_del(struct vfs_section *section) {
 
-	if(!section) return 0;
-
-	collection_delete(sections, section);
-
-	if(section->slaves) {
-		collection_iterate(section->slaves, (collection_f)unlink_slaves_from_section, section);
-		collection_destroy(section->slaves);
-		section->slaves = NULL;
+	if(!section) {
+		SECTIONS_DBG("section == NULL");
+		return 0;
 	}
 
-	if(section->roots) {
-		collection_iterate(section->roots, (collection_f)unlink_roots_from_section, section);
-		collection_destroy(section->roots);
-		section->roots = NULL;
-	}
-
-	if(section->config) {
+	if(section->config && section->config->filename) {
 		remove(section->config->filename);
-		config_destroy(section->config);
-		section->config = NULL;
 	}
-
-	if(section->name) {
-		free(section->name);
-		section->name = NULL;
-	}
-
-	free(section);
+	
+	section_destroy(section);
 
 	return 1;
 }
@@ -691,7 +742,10 @@ unsigned int section_link_slave(struct vfs_section *section, struct slave_ctx *s
 
 unsigned int section_unlink_slave(struct vfs_section *section, struct slave_ctx *slave) {
 
-	if(!section || !slave) return 0;
+	if(!section || !slave) {
+		SECTIONS_DBG("Params error");
+		return 0;
+	}
 
 	if(!collection_find(section->slaves, slave) &&
 			!collection_find(slave->sections, section)) {
@@ -1121,7 +1175,35 @@ struct vfs_element *vfs_find_element(struct vfs_element *container, const char *
 	return element;
 }
 
-/* same as vfs_get_full_path but relative to a container */
+unsigned int vfs_get_relative_path_length(struct vfs_element *container, struct vfs_element *element) {
+	struct vfs_element *current;
+//	char *buffer;
+	unsigned int length = 0;
+//	unsigned int namelen;
+
+	if(!container) {
+		VFS_DBG("Param error: no container");
+		return 0;
+	}
+	if(!element) {
+		VFS_DBG("Param error: no element");
+		return 0;
+	}
+
+	if(!vfs_is_child(container, element)) {
+		VFS_DBG("element is not a child of container, cannot get relative path!");
+		return 0;
+	}
+	
+	current = element;
+	do {
+		length += strlen(current->name) + 2;
+		current = current->parent;
+	} while(current && (current != container));
+
+	return length;;
+}
+
 char *vfs_get_relative_path(struct vfs_element *container, struct vfs_element *element) {
 	struct vfs_element *current;
 	char *buffer;
@@ -1273,7 +1355,7 @@ struct vfs_element *vfs_create_file(struct vfs_element *container, const char *n
 	}
 
 	obj_init(&element->o, element, (obj_f)vfs_obj_destroy);
-	obj_debug(&element->o, 1);
+	collectible_init(element);
 
 	element->namesum = namesum;
 	element->name = strdup(ptr);
@@ -1288,17 +1370,17 @@ struct vfs_element *vfs_create_file(struct vfs_element *container, const char *n
 	/* files don't have childs */
 	element->childs = NULL;
 
-	element->available_from = collection_new();
-	element->leechers = collection_new();
+	element->available_from = collection_new(C_NONE);
+	element->offline_from = collection_new(C_NONE);
 
 	/* don't have an uploader yet */
 	element->uploader = NULL;
 
-	element->mirror_from = collection_new();
-	element->mirror_to = collection_new();
-	element->offline_from = collection_new();
-	element->link_from = collection_new();
-	collection_add_first(container->childs, element);
+	element->leechers = collection_new(C_CASCADE);
+	element->mirror_from = collection_new(C_CASCADE);
+	element->mirror_to = collection_new(C_CASCADE);
+	element->link_from = collection_new(C_CASCADE);
+	collection_add(container->childs, element);
 	
 	element->parent = container;
 	element->type = VFS_FILE;
@@ -1375,7 +1457,7 @@ struct vfs_element *vfs_secure_create_symlink(struct vfs_element *container, str
 	}
 
 	obj_init(&element->o, element, (obj_f)vfs_obj_destroy);
-	obj_debug(&element->o, 1);
+	collectible_init(element);
 
 	/* for a symlink, we need the name & the link_to only */
 
@@ -1418,8 +1500,8 @@ struct vfs_element *vfs_secure_create_symlink(struct vfs_element *container, str
 	element->xfertime = 0;
 	//element->destroyed = 0;
 
-	collection_add_first(container->childs, element);
-	collection_add_first(target->link_from, element);
+	collection_add(container->childs, element);
+	collection_add(target->link_from, element);
 
 	return element;
 }
@@ -1498,7 +1580,7 @@ struct vfs_element *vfs_secure_create_folder(struct vfs_element *container, cons
 		}
 
 		obj_init(&element->o, element, (obj_f)vfs_obj_destroy);
-		obj_debug(&element->o, 1);
+		collectible_init(element);
 
 		//if(ptr) {
 			element->namesum = namesum;
@@ -1517,10 +1599,10 @@ struct vfs_element *vfs_secure_create_folder(struct vfs_element *container, cons
 		element->leechers = NULL;
 		element->uploader = NULL;
 
-		element->childs = collection_new();
-		element->link_from = collection_new();
-		element->browsers = collection_new();
-		collection_add_first(container->childs, element);
+		element->childs = collection_new(C_CASCADE);
+		element->link_from = collection_new(C_CASCADE);
+		element->browsers = collection_new(C_CASCADE);
+		collection_add(container->childs, element);
 
 		/* folders are not available for download */
 		element->available_from = NULL;
@@ -1592,14 +1674,14 @@ struct vfs_element *vfs_create_folder(struct vfs_element *container, const char 
 
 	return element;
 }
-
+/*
 static unsigned int recursive_deletion_callback(struct collection *c, struct vfs_element *element, void *param) {
 
 	vfs_recursive_delete(element);
 
 	return 1;
 }
-
+*/
 /*
 	This deletion routine will be called on every of this element's
 	childs.
@@ -1611,72 +1693,27 @@ static unsigned int recursive_deletion_callback(struct collection *c, struct vfs
 */
 unsigned int vfs_recursive_delete(struct vfs_element *element) {
 
-	if(!obj_isvalid(&element->o)) {
-		/* Avoid double-frees */
-		return 0;
-	}
-
-	/* recursively delete all childs */
-	if(element->childs) {
-		collection_iterate(element->childs, (collection_f)recursive_deletion_callback, NULL);
-	}
-
-	/* Now, the childs collection should be empty. */
-
 	/* if there's no parent then we're deleting the root OR
 		we're recursively deleting this file into one of
 		the sub-functions called by this one, so we'd
 		better not continue either ways */
 	if(!element->parent) {
-		VFS_DBG("CANNOT DELETE THE ROOT ELEMENT");
+		VFS_DBG("ELEMENT HAS NO PARENT: CANNOT DELETE THE ROOT ELEMENT");
 		return 0;
-	}
-
-	//element->parent->size -= element->size;
-	/* decrease the size of the file, wich will recursively
-		decrease the size of all parent directories */
-	vfs_decrease_size(element, element->size);
-
-	/* update the modification timestamp of the parent */
-	vfs_modify(element->parent, time_now());
-	
-	/*
-		Remove the element from its parent's collection.
-		Done here rather than in the destroy callback
-		because we don't want the element to be accessible
-		from it's parent structure.
-	*/
-	if(element->parent) {
-		collection_delete(element->parent->childs, element);
-		element->parent = NULL;
 	}
 	
 	/* void all collections */
-	if(element->childs) {
-		collection_void(element->childs);
-	}
-	if(element->offline_from) {
-		collection_void(element->offline_from);
-	}
-	if(element->available_from) {
-		collection_void(element->available_from);
-	}
-	if(element->leechers) {
-		collection_void(element->leechers);
-	}
-	if(element->mirror_from) {
-		collection_void(element->mirror_from);
-	}
-	if(element->mirror_to) {
-		collection_void(element->mirror_to);
-	}
-	if(element->browsers) {
-		collection_void(element->browsers);
-	}
-	if(element->link_from) {
-		collection_void(element->link_from);
-	}
+	if(element->childs) collection_void(element->childs);
+	if(element->offline_from) collection_void(element->offline_from);
+	if(element->available_from) collection_void(element->available_from);
+	if(element->leechers) collection_void(element->leechers);
+	if(element->mirror_from) collection_void(element->mirror_from);
+	if(element->mirror_to) collection_void(element->mirror_to);
+	if(element->browsers) collection_void(element->browsers);
+	if(element->link_from) collection_void(element->link_from);
 
+	//VFS_DBG("signaling %s for destruction", element->name);
+	
 	obj_destroy(&element->o);
 
 	return 1;
@@ -1735,6 +1772,11 @@ unsigned int vfs_decrease_size(struct vfs_element *element, unsigned long long i
 /* set the new timestamp for the element and all its parent elements */
 unsigned int vfs_modify(struct vfs_element *element, unsigned long long int timestamp) {
 
+	if(!element) {
+		VFS_DBG("Params error");
+		return 0;
+	}
+	
 	/* don't allow to set an older
 		timestamp than what it is right now */
 	if(timestamp < element->timestamp) {

@@ -33,34 +33,54 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "users.h"
+#ifndef __ADIO_H
+#define __ADIO_H
 
+#include "constants.h"
 
-typedef struct {
-	collectible c @ collectible;
+#ifndef NO_FTPD_DEBUG
+#  define DEBUG_ADIO
+#endif
 
-	config_file *config;
+#ifdef DEBUG_ADIO
+# ifdef FTPD_DEBUG_TO_CONSOLE
+#  define ADIO_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+# else
+#  define ADIO_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+# endif
+#else
+#  define ADIO_DBG(format, arg...)
+#endif
 
-	char *username;
-	char *usergroup;
+struct adio_file {
+	unsigned int balance; /* running count of operations */
+#ifdef WIN32
+	HANDLE s; /* stream */
+#endif
+} __attribute__((packed));
 
-	unsigned int disabled; /* 1 if the user is disabled */
+struct adio_operation {
+	unsigned long long int timestamp; /* time at wich the operation is started */
+	char *buffer;
+	unsigned long long int position; /* position in the file */
+	unsigned int length; /* length to be retreived */
+	unsigned int length_done;
+	struct adio_file *file;
+#ifdef WIN32
+	OVERLAPPED ov;
+#endif
+} __attribute__((packed));
 
-	_collection *clients;
-} user_ctx;
-
-module users {
-	extern _collection *users @ all;
-
-	user_ctx *user_new @ add(char *username, char *usergroup, char *password);
-	user_ctx *user_get @ get(char *username);
-
-	unsigned int user_auth @ auth(user_ctx *user, char *password);
-	unsigned int user_disable @ disable(user_ctx *user, unsigned int disabled);
-	unsigned int user_delete @ delete(user_ctx *user);
+struct adio_file *adio_open(const char *filename, int create);
+void adio_close(struct adio_file *adio);
 	
-	int user_set_group @ chgroup(user_ctx *user, char *group);
-	int user_set_password @ chpass(user_ctx *user, char *password);
 
-	//user_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
-}
+struct adio_operation *adio_read(struct adio_file *file, char *buffer, unsigned long long int position,
+									unsigned int length, struct adio_operation *_op);
+struct adio_operation *adio_write(struct adio_file *file, char *buffer, unsigned long long int position,
+									unsigned int length, struct adio_operation *_op);
+int adio_probe(struct adio_operation *op, unsigned int *ready);
+void adio_complete(struct adio_operation *op);
+
+
+#endif /* __ADIO_H */

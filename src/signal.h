@@ -38,6 +38,7 @@
 
 #include "constants.h"
 #include "obj.h"
+#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
 //#  define DEBUG_SIGNAL
@@ -55,6 +56,8 @@
 #endif
 
 struct signal_ctx {
+	struct obj o;
+	struct collectible c;
 
 	/* parent "signals" holder */
 	struct collection *signals;
@@ -71,6 +74,7 @@ typedef int (*timeout_f)(void *param);
 
 struct signal_callback {
 	struct obj o;
+	struct collectible c;
 
 	/* parent signal context */
 	struct signal_ctx *ctx;

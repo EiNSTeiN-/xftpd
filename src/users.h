@@ -61,7 +61,8 @@ void users_free();
 
 typedef struct user_ctx user_ctx;
 struct user_ctx {
-	unsigned long long int uid;
+	struct obj o;
+	struct collectible c;
 
 	struct config_file *config;
 
@@ -73,11 +74,9 @@ struct user_ctx {
 	/* the password is stored as a MD5 hash */
 	char password_hash[MD5_DIGEST_LENGTH];
 
-	unsigned int disabled; /* 1 if the user is disabled */
+	char disabled; /* 1 if the user is disabled */
 
 	struct collection *clients;
-
-	struct collection *fields;
 } __attribute__((packed));
 
 extern struct collection *users;
@@ -88,8 +87,8 @@ struct user_ctx *user_load(char *filename);
 
 unsigned int user_dump(struct user_ctx *user);
 unsigned int user_auth(struct user_ctx *user, char *password);
-unsigned int user_disable(struct user_ctx *user, unsigned int disabled);
-unsigned int user_del(struct user_ctx *user);
+unsigned int user_disable(struct user_ctx *user, char disabled);
+unsigned int user_delete(struct user_ctx *user);
 
 int user_set_group(struct user_ctx *user, char *group);
 int user_set_password(struct user_ctx *user, char *password);

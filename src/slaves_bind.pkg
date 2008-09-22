@@ -35,14 +35,24 @@
 
 $#include "slaves.h"
 
+typedef enum {
+	SLAVE_PLATFORM_WIN32
+} slave_platform;
 
 /* structure used to keep track of connected peers */
 typedef struct {
+	collectible c @ collectible;
+	
+	config_file *volatile_config;
+	
+	slave_platform platform;
+	
+	unsigned long long int rev @ revision;
 
 	slave_ctx *slave;			/* NULL for not-ready slaves */
 
 	unsigned long long int timestamp; /* time at wich the slave connected */
-	unsigned long long int statstime @ xferprobe; /* last time the stats have been asked */
+	unsigned long long int statstime; /* last time the stats have been asked */
 
 	/* utility information */
 	unsigned long long int diskfree;
@@ -56,12 +66,15 @@ typedef struct {
 
 /* slave's hello data */
 typedef struct {
+	unsigned long long int rev @ revision;
 	unsigned long long int diskfree; /* this is the total of all mapped disks */
 	unsigned long long int disktotal;
 	const char name[1];
 } hello_data;
 
 typedef struct {
+	collectible c @ collectible;
+	
 	config_file *config;
 	char *name; /* name of the slave */
 	unsigned long long int lastonline;
@@ -72,6 +85,9 @@ typedef struct {
 
 module slaves {
 	extern _collection *slaves @ all;
+	
+	extern _collection *connecting_slaves @ connecting; /* slave_connection waiting to be identified */
+	extern _collection *connected_slaves @ connected; /* slave_connection ready for i/o */
 
 	/* calculate the size used by the files of slave */
 	unsigned long long int slave_files_size @ using(slave_connection *cnx);
@@ -80,21 +96,23 @@ module slaves {
 	const char *slave_address @ address(slave_connection *cnx);
 
 	/* iterate a slave *connection* */
-	slave_connection *collection_next @ iterate_cnx(_collection *c, unsigned int *iterator);
+	//slave_connection *collection_next @ iterate_cnx(_collection *c, unsigned int *iterator);
 
 	/* iterate a slave descriptor */
-	slave_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	//slave_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
 
 	/* utility apis */
 	slave_ctx *slave_new @ add(const char *name);
 	slave_ctx *slave_get @ get(const char *name);
 
 	unsigned int slave_dump @ save(slave_ctx *slave);
-	unsigned int slave_del @ delete(slave_ctx *slave);
+	unsigned int slave_delete @ delete(slave_ctx *slave);
 
 	void slave_connection_destroy @ kick(slave_connection *cnx);
 	
 	unsigned int slave_usage_from @ usage_from(slave_connection *cnx, vfs_element *element);
+	
+	int slave_set_virtual_root @ vroot(slave_ctx *slave, vfs_element *root);
 }
 
 

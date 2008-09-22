@@ -44,20 +44,33 @@ unsigned long long int obj_balance = 0;
 	Initialize an object, given a 'self' and a destructor function.
 */
 int obj_init(struct obj *o, void *self, void (*destructor)(void *self)) {
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
 
 	o->ref = 0;
 	o->destroyed = 0;
+	//o->type = type;
 
 	o->debug = 0;
 
 	o->iscalled = 0;
 	o->destructor = destructor;
 	o->self = self;
+	
+	//OBJ_DBG("obj_init(); self == %08x; o == %08x", (int)self, (int)o);
 
 	return 1;
 }
 
-int obj_debug(struct obj *o, int debug) {
+int obj_debug(struct obj *o, char debug) {
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
 
 	//o->debug = debug;
 
@@ -71,6 +84,11 @@ int obj_debug(struct obj *o, int debug) {
 */
 int obj_destroy(struct obj *o) {
 	int self, debug;
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
 
 	if(o->iscalled) {
 		/* destroy has already been called ! */
@@ -96,11 +114,30 @@ int obj_destroy(struct obj *o) {
 }
 
 /*
+	Return the 'self' passed as a parameter at the
+	object's initialization.
+*/
+void *obj_self(struct obj *o) {
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
+	
+	return o->self;
+}
+
+/*
 	Increase the reference count, preventing the
 	object of being deleted until the obj_unref is
 	called.
 */
 int obj_ref(struct obj *o) {
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
 
 	if(o->destroyed) {
 		OBJ_DBG("obj[%08x] ERROR: Referencing after destruction ...", (int)o->self);
@@ -120,6 +157,11 @@ int obj_ref(struct obj *o) {
 	destroyed after the deletion.
 */
 int obj_unref(struct obj *o) {
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
 
 	if(!o->ref) {
 		/* Bam. Trying to dereference but no references! */
@@ -158,6 +200,11 @@ int obj_unref(struct obj *o) {
 	1 otherwise.
 */
 int obj_isvalid(struct obj *o) {
+	
+	if(!o) {
+		OBJ_DBG("ERROR: o == NULL");
+		return 0;
+	}
 
 	return (o->destroyed == 0);
 

@@ -58,7 +58,7 @@ int users_init() {
 	USERS_DBG("Loading ...");
 
 	/* load all users from file here */
-	users = collection_new();
+	users = collection_new(C_CASCADE);
 
 	path = _fullpath(NULL, ".", 0);
 	if(!path) {
@@ -118,6 +118,36 @@ static unsigned char char_to_hex(unsigned char c) {
 	if((c >= 'a') && (c <= 'f')) return c - 'a' + 10;
 
 	return 0;
+}
+
+static void user_obj_destroy(struct user_ctx *user) {
+	
+	collectible_destroy(user);
+	
+	event_onDeleteUser(user);
+	
+	/* kick all the user's clients out */
+//	kick_clients(user);
+	
+	/* free the user structure */
+	collection_destroy(user->clients);
+	user->clients = NULL;
+
+	/* delete the user file */
+	if(user->config) {
+		config_destroy(user->config);
+		user->config = NULL;
+	}
+	
+	free(user->username);
+	user->username = NULL;
+	
+	free(user->usergroup);
+	user->usergroup = NULL;
+	
+	free(user);
+	
+	return;
 }
 
 /* load a user from file */
@@ -209,6 +239,9 @@ struct user_ctx *user_load(char *filename) {
 		free(usergroup);
 		return NULL;
 	}
+	
+	obj_init(&user->o, user, (obj_f)user_obj_destroy);
+	collectible_init(user);
 
 	user->config = config_new(filename, USERS_CONFIG_TIMEOUT);
 	free(filename);
@@ -229,7 +262,7 @@ struct user_ctx *user_load(char *filename) {
 
 	memcpy(user->password_hash, password_hash, sizeof(password_hash));
 
-	user->clients = collection_new();
+	user->clients = collection_new(C_CASCADE);
 
 	if(!collection_add(users, user)) {
 		USERS_DBG("Collection error");
@@ -278,6 +311,9 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 		free(fullpath);
 		return NULL;
 	}
+	
+	obj_init(&user->o, user, (obj_f)user_obj_destroy);
+	collectible_init(user);
 
 	user->config = config_new(fullpath, USERS_CONFIG_TIMEOUT);
 	free(fullpath);
@@ -312,7 +348,7 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 	}
 	config_write(user->config, "usergroup", usergroup);
 
-	user->clients = collection_new();
+	user->clients = collection_new(C_CASCADE);
 
 	MD5(password, strlen(password), user->password_hash);
 
@@ -408,26 +444,8 @@ unsigned int user_auth(struct user_ctx *user, char *password) {
 	return !memcmp(user->password_hash, password_hash, MD5_DIGEST_LENGTH);
 }
 
-static unsigned int kick_clients_callback(struct collection *c, struct ftpd_client_ctx *client, void *param) {
-
-	ftpd_client_destroy(client);
-	collection_delete(c, client);
-
-	return 1;
-}
-
-/* kick all the user's clients out */
-static void kick_clients(struct user_ctx *user) {
-
-	if(!user) return;
-
-	collection_iterate(user->clients, (collection_f)kick_clients_callback, NULL);
-
-	return;
-}
-
 /* return 1 if the user was deleted */
-unsigned int user_disable(struct user_ctx *user, unsigned int disabled) {
+unsigned int user_disable(struct user_ctx *user, char disabled) {
 
 	if(!user) return 0;
 	
@@ -435,7 +453,7 @@ unsigned int user_disable(struct user_ctx *user, unsigned int disabled) {
 		we must kick all the user's
 		clients out */
 	if(disabled) {
-		kick_clients(user);
+		collection_empty(user->clients);
 	}
 
 	user->disabled = disabled;
@@ -444,35 +462,30 @@ unsigned int user_disable(struct user_ctx *user, unsigned int disabled) {
 	config_write_int(user->config, "disabled", disabled);
 	config_save(user->config);
 
-	return 0;
+	return 1;
+}
+
+void user_destroy(struct user_ctx *user) {
+	
+	collection_void(user->clients);
+	obj_destroy(&user->o);
+	
+	return;
 }
 
 /* return 1 if the user was deleted */
-unsigned int user_del(struct user_ctx *user) {
+unsigned int user_delete(struct user_ctx *user) {
 
 	if(!user) return 0;
 
-	event_onDeleteUser(user);
-	
-	/* kick all the user's clients out */
-	kick_clients(user);
-
 	/* delete the user file */
-	if(user->config) {
+	if(user->config && user->config->filename) {
 		remove(user->config->filename);
-		config_destroy(user->config);
-		user->config = NULL;
 	}
 
 	USERS_DBG("User %s deleted", user->username);
-
-	collection_delete(users, user);
 	
-	/* free the user structure */
-	collection_destroy(user->clients);
-	free(user->username);
-	free(user->usergroup);
-	free(user);
+	user_destroy(user);
 
 	return 1;
 }

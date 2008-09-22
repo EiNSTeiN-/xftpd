@@ -51,7 +51,22 @@
 
 //struct collection *signals = NULL;
 
-static unsigned int signal_get_matcher(struct collection *c, struct signal_ctx *ctx, char *name) {
+static void signal_obj_destroy(struct signal_ctx *signal) {
+	
+	collectible_destroy(signal);
+	
+	collection_destroy(signal->callbacks);
+	
+	free(signal->name);
+	signal->name = NULL;
+	signal->callbacks = NULL;
+	signal->signals = NULL;
+	free(signal);
+	
+	return;
+}
+
+static int signal_get_matcher(struct collection *c, struct signal_ctx *ctx, char *name) {
 	return !stricmp(ctx->name, name);
 }
 
@@ -71,6 +86,9 @@ struct signal_ctx *signal_get(struct collection *signals, const char *name, int 
 			SIGNAL_DBG("Memory error");
 			exit(1);
 		}
+		
+		obj_init(&ctx->o, ctx, (obj_f)signal_obj_destroy);
+		collectible_init(ctx);
 
 		ctx->signals = signals;
 		ctx->name = strdup(name);
@@ -81,10 +99,10 @@ struct signal_ctx *signal_get(struct collection *signals, const char *name, int 
 		}
 
 		ctx->ref = 0;
-		ctx->callbacks = collection_new();
+		ctx->callbacks = collection_new(C_CASCADE);
 		collection_add(signals, ctx);
 
-		SIGNAL_DBG("signal \"%s\" created at %08x.", name, signals);
+		SIGNAL_DBG("signal \"%s\" created at %08x.", name, (int)signals);
 	}
 
 	return ctx;
@@ -92,6 +110,11 @@ struct signal_ctx *signal_get(struct collection *signals, const char *name, int 
 
 static void signal_callback_obj_destroy(struct signal_callback *s) {
 
+	collectible_destroy(s);
+
+	SIGNAL_DBG("callback %08x deleted.", (int)s);
+	
+	s->ctx = NULL;
 	free(s);
 
 	return;
@@ -119,6 +142,8 @@ struct signal_callback *signal_add(struct collection *signals, struct collection
 	}
 
 	obj_init(&s->o, s, (obj_f)signal_callback_obj_destroy);
+	collectible_init(s);
+	
 	s->ctx = ctx;
 	s->filter = 0;
 	s->callback = callback;
@@ -188,22 +213,16 @@ int signal_unref(struct signal_ctx *signal) {
 
 	if(!collection_size(signal->callbacks) && !signal->ref) {
 		
-		SIGNAL_DBG("signal \"%s\" destroyed from %08x.", signal->name, signal->signals);
+		SIGNAL_DBG("signal \"%s\" destroyed from %08x.", signal->name, (int)signal->signals);
 
-		free(signal->name);
-		signal->name = NULL;
-		collection_destroy(signal->callbacks);
-		signal->callbacks = NULL;
-		collection_delete(signal->signals, signal);
-		signal->signals = NULL;
-		free(signal);
+		obj_destroy(&signal->o);
 	}
 
 	return 1;
 }
 
 int signal_del(struct collection *owner, struct signal_callback *s) {
-	struct signal_ctx *ctx;
+	struct signal_ctx *signal;
 
 	if(!owner || !s) {
 		SIGNAL_DBG("Params error");
@@ -212,26 +231,18 @@ int signal_del(struct collection *owner, struct signal_callback *s) {
 
 	SIGNAL_DBG("callback %08x deleted from signal \"%s\".", (int)s, s->ctx->name);
 
-	collection_delete(owner, s);
-	collection_delete(s->ctx->callbacks, s);
-	ctx = s->ctx;
-	s->ctx = NULL;
+	//collection_delete(owner, s);
+	//collection_delete(s->ctx->callbacks, s);
+	signal = s->ctx;
 
 	/* the actual freeing if the structure will be done thru the following call */
 	obj_destroy(&s->o);
-	s = NULL;
 
-	if(!collection_size(ctx->callbacks) && !ctx->ref) {
+	if(!collection_size(signal->callbacks) && !signal->ref) {
 		
-		SIGNAL_DBG("signal \"%s\" destroyed from %08x.", ctx->name, ctx->signals);
+		SIGNAL_DBG("signal \"%s\" destroyed from %08x.", signal->name, (int)signal->signals);
 
-		free(ctx->name);
-		ctx->name = NULL;
-		collection_destroy(ctx->callbacks);
-		ctx->callbacks = NULL;
-		collection_delete(ctx->signals, ctx);
-		ctx->signals = NULL;
-		free(ctx);
+		obj_destroy(&signal->o);
 	}
 
 	return 1;
@@ -263,6 +274,8 @@ int signal_clear_with_filter(struct collection *group, char *name, void *obj) {
 
 	collection_iterate(group, (collection_f)signal_clear_with_filter_iterator, &ctx);
 
+	SIGNAL_DBG("deleted.");
+
 	return 1;
 }
 
@@ -289,16 +302,19 @@ int signal_clear_all_with_filter(struct collection *group, void *obj) {
 
 int signal_clear(struct collection *group) {
 	
-	if(!group)
+	if(!group) {
 		return 0;
+	}
 
-	while(collection_size(group)) {
-		void *first = collection_first(group);
+	/*while(collection_size(group)) {
+		struct signal_callback *first = collection_first(group);
 		if(!signal_del(group, first)) {
-			SIGNAL_DBG("ERROR!!! Could not delete signal!");
+			SIGNAL_DBG("ERROR!!! Could not delete signal callback at %08x", (int)first);
 			collection_delete(group, first);
 		}
-	}
+	}*/
+	
+	collection_empty(group);
 
 	return 1;
 }
@@ -323,7 +339,8 @@ int signal_raise(struct signal_ctx *signal, void *obj) {
 	if(!signal)
 		return 0;
 	
-	//SIGNAL_DBG("signal \"%s\" raised with obj == %08x.", name, (int)obj);
+	/* lot of flood */
+	//SIGNAL_DBG("signal \"%s\" raised with obj == %08x (%u callbacks).", signal->name, (int)obj, collection_size(signal->callbacks));
 
 	collection_iterate(signal->callbacks, (collection_f)signal_raise_iterator, obj);
 

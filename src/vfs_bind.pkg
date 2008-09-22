@@ -38,6 +38,8 @@ $#include "scripts.h"
 
 /* sections will be displayed in the root directory */
 typedef struct {
+	collectible c @ collectible;
+	
 	char *name;
 	
 	config_file *config;
@@ -46,7 +48,7 @@ typedef struct {
 	_collection *slaves; /* slaves_ctx mapped to this section */
 } vfs_section;
 
-enum {
+enum vfs_type {
 	VFS_FILE,
 	VFS_FOLDER,
 	VFS_LINK
@@ -54,6 +56,8 @@ enum {
 
 /* represents any member of the file system */
 typedef struct {
+	collectible c @ collectible;
+	
 	vfs_element *parent;	/* parent element */
 	vfs_section *section;	/* id of the owner in sections_collection */
 	unsigned int type;				/* folder, file, ... */
@@ -116,14 +120,14 @@ module vfs {
 
 	void vfs_recursive_delete @ delete(vfs_element *element);
 	
-	vfs_element *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	//vfs_element *collection_next @ iterate(_collection *c, unsigned int *iterator);
 }
 
 module sections {
 	extern _collection *sections @ all;
 
 	/* iterate a slave descriptor */
-	vfs_section *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	//vfs_section *collection_next @ iterate(_collection *c, unsigned int *iterator);
 
 	vfs_section *section_new @ add(const char *name);
 	vfs_section *section_get @ get(const char *name);

@@ -41,14 +41,13 @@
 
 static struct branch *find_branch(struct collection *branches, char *trigger, unsigned int any, char **args);
 
-static unsigned int find_branch_callback(struct collection *c, void *item, void *param) {
+static int find_branch_callback(struct collection *c, struct branch *b, void *param) {
 	struct {
 		char *trigger;
 		unsigned int any;
 		struct branch *b;
 		char *args;
 	} *ctx = param;
-	struct branch *b = item;
 	char *ptr, *args;
 
 	if(strchr(ctx->trigger, ' ')) {
@@ -100,44 +99,61 @@ static struct branch *find_branch(struct collection *branches, char *trigger, un
 		char *args;
 	} ctx = { trigger, any, NULL, NULL };
 
-	collection_iterate(branches, find_branch_callback, &ctx);
+	collection_iterate(branches, (collection_f)find_branch_callback, &ctx);
 
-	if(args)
+	if(args) {
 		*args = ctx.args;
-	else
+	} else {
 		free(ctx.args);
+	}
 
 	return ctx.b;
 }
 
-static unsigned int handler_exist_callback(struct collection *c, void *item, void *param) {
+static int handler_exist_matcher(struct collection *c, void *item, void *param) {
 	struct {
-		unsigned int success;
-		char *handler;
+		struct collectible *cb;
+		int (*cmp)(void *a, void *b);
 	} *ctx = param;
-	char *handler = item;
 
-	if(!stricmp(handler, ctx->handler)) {
-		ctx->success = 1;
-		return 0;
-	}
-
-	return 1;
+	return !(*ctx->cmp)(item, obj_self(ctx->cb->self));
 }
 
-static unsigned int handler_exist(struct collection *branches, char *handler) {
+static unsigned int handler_exist(struct collection *handlers, struct collectible *cb, int (*cmp)(void *a, void *b)) {
 	struct {
-		unsigned int success;
-		char *handler;
-	} ctx = { 0, handler };
+		struct collectible *cb;
+		int (*cmp)(void *a, void *b);
+	} ctx = { cb, cmp };
 
-	collection_iterate(branches, handler_exist_callback, &ctx);
+	return (collection_match(handlers, (collection_f)handler_exist_matcher, &ctx) != NULL);
+}
 
-	return ctx.success;
+static void branch_obj_destroy(struct branch *b) {
+	
+	collectible_destroy(b);
+	
+	TREE_DBG("Branch destruction (%s)", b->name);
+
+	if(b->branches) {
+		collection_destroy(b->branches);
+		b->branches = NULL;
+	}
+
+	if(b->handlers) {
+		collection_destroy(b->handlers);
+		b->handlers = NULL;
+	}
+
+	free(b->name);
+	b->name = NULL;
+	
+	free(b);
+
+	return;
 }
 
 /* add a hook to the collection */
-unsigned int tree_add(struct collection *branches, char *trigger, char *handler) {
+unsigned int tree_add(struct collection *branches, char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b)) {
 	struct branch *b;
 	char *ptr;
 
@@ -151,7 +167,7 @@ unsigned int tree_add(struct collection *branches, char *trigger, char *handler)
 		return 0;
 	}
 
-	if(!handler) {
+	if(!cb) {
 		TREE_DBG("Parameter error: handler");
 		return 0;
 	}
@@ -172,6 +188,9 @@ unsigned int tree_add(struct collection *branches, char *trigger, char *handler)
 			TREE_DBG("Memory error");
 			return 0;
 		}
+		
+		obj_init(&b->o, b, (obj_f)branch_obj_destroy);
+		collectible_init(b);
 
 		b->name = strdup(trigger);
 		if(!b->name) {
@@ -180,26 +199,25 @@ unsigned int tree_add(struct collection *branches, char *trigger, char *handler)
 			return 0;
 		}
 
-		b->branches = collection_new();
-		b->handlers = collection_new();
+		b->branches = collection_new(C_CASCADE);
+		b->handlers = collection_new(C_CASCADE);
 		collection_add(branches, b);
 
 		//printf("[branch] created %s\n", b->name);
 		TREE_DBG("Created branch %s", b->name);
 	}
 
-
 	if(!ptr) {
 		/* add the handler to that branch */
 		/* ensure that the function is not already added */
-		if(!handler_exist(b->handlers, handler)) {
-			collection_add(b->handlers, handler);
+		if(!handler_exist(b->handlers, cb, cmp)) {
+			collection_c_add(b->handlers, cb);
 		}
 
 		//printf("[branch] handler added to %s\n", b->name);
-		TREE_DBG("added handler \"%s\" to branch %s", handler, b->name);
+		TREE_DBG("added handler to branch %s", b->name);
 	} else {
-		return tree_add(b->branches, ptr, handler);
+		return tree_add(b->branches, ptr, cb, cmp);
 	}
 
 	return 1;
@@ -219,36 +237,10 @@ struct collection *tree_get(struct collection *branches, char *trigger, char **a
 	return b->handlers;
 }
 
-static unsigned int tree_destroy_free_handlers(struct collection *c, void *item, void *param) {
-	struct branch *b = param;
-
-	collection_delete(b->handlers, item);
-	free(item);
-
-	return 1;
-}
-
-static unsigned int tree_destroy_callback(struct collection *c, struct branch *b, void *param) {
-
-	TREE_DBG("Deleting branch %s", b->name);
-
-	free(b->name);
-
-	collection_iterate(b->handlers, tree_destroy_free_handlers, b);
-	collection_destroy(b->handlers);
-
-	collection_iterate(b->branches, (collection_f)tree_destroy_callback, b->branches);
-	collection_destroy(b->branches);
-
-	collection_delete(c, b);
-
-	return 1;
-}
-
 /* destroy all branches of the collection */
 unsigned int tree_destroy(struct collection *branches) {
 	
-	collection_iterate(branches, (collection_f)tree_destroy_callback, NULL);
+	collection_empty(branches);
 
 	return 1;
 }

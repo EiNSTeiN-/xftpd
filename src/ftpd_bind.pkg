@@ -37,6 +37,7 @@ $#include "ftpd.h"
 $#include "main.h"
 
 typedef struct {
+	
 	unsigned long long int timestamp; /* start time */
 	unsigned int upload; /* 0 for download */
 
@@ -52,7 +53,11 @@ typedef struct {
 } client_xfer;
 
 typedef struct {
+	collectible c @ collectible;
+	
 	unsigned long long int timestamp;
+	
+	config_file *volatile_config;
 
 	unsigned int logged;		/* true if the user is authenticated */
 	char username[32];			/* username used to authenticate */
@@ -76,7 +81,7 @@ module ftpd {
 module clients {
 	_collection *clients @ all;
 
-	ftpd_client *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	//ftpd_client *collection_next @ iterate(_collection *c, unsigned int *iterator);
 	client_xfer *ftpd_lua_client_to_xfer @ get_xfer(ftpd_client *ctx);
 	const char *client_address @ address(ftpd_client *ctx);
 

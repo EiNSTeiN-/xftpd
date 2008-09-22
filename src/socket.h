@@ -39,6 +39,7 @@
 #include "constants.h"
 #include "signal.h"
 #include "obj.h"
+#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_SOCKET
@@ -76,6 +77,7 @@ extern struct collection *socket_monitors;
 
 struct socket_monitor {
 	struct obj o;
+	struct collectible c;
 
 	int fd;
 

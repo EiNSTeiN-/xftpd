@@ -33,6 +33,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include <windows.h>
 #include <stdio.h>
 #include <time.h>
@@ -210,6 +211,8 @@ int main(int argc, char* argv[]) {
 		slaves_dump_fileslog();
 		
 		config_poll();
+		
+		collection_cleanup_iterators();
 
 		Sleep(MASTER_SLEEP_TIME);
 
@@ -249,8 +252,10 @@ int main(int argc, char* argv[]) {
 
 			nuke_reload();
 
+			MAIN_DBG("Calling the reload event ...");
 			/* fire the onReload event */
 			event_onReload();
+			MAIN_DBG("Reload is complete.");
 			
 			main_ctx.reload = 0;
 		}

@@ -76,6 +76,9 @@ extern struct vfs_element *vfs_root;
 /* sections will be displayed in the root directory */
 typedef struct vfs_section vfs_section;
 struct vfs_section {
+	struct obj o;
+	struct collectible c;
+	
 	char *name; /* of the section */
 	
 	struct config_file *config;
@@ -103,6 +106,7 @@ struct vfs_conflict {
 typedef struct vfs_element vfs_element;
 struct vfs_element {
 	struct obj o;
+	struct collectible c;
 
 	/* these are mostly set be the vfs functions */
 	struct vfs_section *section;	/* section */
@@ -165,6 +169,7 @@ struct vfs_element *vfs_raw_find_element(struct vfs_element *container, const ch
 
 struct vfs_element *vfs_get_child_by_name(struct vfs_element *container, const char *name);
 char *vfs_get_relative_path(struct vfs_element *container, struct vfs_element *element);
+unsigned int vfs_get_relative_path_length(struct vfs_element *container, struct vfs_element *element);
 unsigned int vfs_is_child(struct vfs_element *parent, struct vfs_element *child);
 
 struct vfs_element *vfs_create_folder(struct vfs_element *container, const char *name, const char *owner);

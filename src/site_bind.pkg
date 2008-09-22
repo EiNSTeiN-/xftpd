@@ -38,5 +38,5 @@ $#include "tree.h"
 
 module site {
 	extern _collection *site_hooks @ hooks;
-	unsigned int tree_add @ hook(_collection *tree, char *trigger, char *handler);
+	unsigned int site_tree_add @ hook(_collection *tree, char *trigger, char *handler);
 }

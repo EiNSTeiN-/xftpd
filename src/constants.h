@@ -78,14 +78,25 @@
 #define NO_MIRRORS
 
 /* The timestamp after wich the server will stop working */
-#define FTPD_STOP_WORKING_TIMESTAMP		1172379600LLU
+//#define FTPD_STOP_WORKING_TIMESTAMP		1172379600LLU 			//0.1b (02 / 25 / 2007)
+#define FTPD_STOP_WORKING_TIMESTAMP		1174798800LLU 			//0.2b (03 / 25 / 2007)
+
+/* Remove the irc advertisement "powered by ..." */
+//#define NO_IRC_ADVERTISEMENT
 
 /* The official version number */
-#define VERSION_NUMBER	"0.1b"
+#define VERSION_NUMBER	"0.2b"
+
+#define SLAVE_PLATFORM_CURRENT			SLAVE_PLATFORM_WIN32
+
+/* The slave's revision number */
+#define SLAVE_UPDATE_FILENAME_PATTERN	"xftpd_update%I64u.exe"
+#define SLAVE_REVISION_NUMBER			10LLU
 
 /**********************************************/
 /**********************************************/
 /*********** default values & config */
+
 
 #define MASTER_CONFIG_FILE		"xFTPd.conf"
 #define SLAVE_CONFIG_FILE		"slave.conf"
@@ -107,6 +118,8 @@
 
 #define SLAVE_UP_BUFFER_SIZE		(1024 * 1024)
 #define SLAVE_DN_BUFFER_SIZE		(65535)
+
+#define SLAVE_DELETE_INCOMPLETE_UPLOADS		TRUE
 
 /* timeout for master/slave data arrival */
 #define SLAVE_MASTER_TIMEOUT		(60 * 1000) /* 60 seconds */

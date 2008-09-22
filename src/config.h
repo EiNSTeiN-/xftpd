@@ -37,6 +37,8 @@
 #define __CONFIG_H
 
 #include "constants.h"
+#include "obj.h"
+#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
 #  define DEBUG_CONFIG
@@ -55,7 +57,10 @@
 
 typedef struct config_field config_field;
 struct config_field {
-	int modified; /* since the last save */
+	struct obj o;
+	struct collectible c;
+	
+	char modified; /* since the last save */
 
 	unsigned int namesum;
 	char *name;
@@ -64,6 +69,9 @@ struct config_field {
 
 typedef struct config_file config_file;
 struct config_file {
+	struct obj o;
+	struct collectible c;
+	
 	unsigned long long int timeout; /* maximum time between each saves */
 	unsigned long long int savetime; /* last time the file was saved to disk */
 	int modified; /* 1 if any field was modified since the last save */

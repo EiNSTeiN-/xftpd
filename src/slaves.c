@@ -253,11 +253,11 @@ unsigned int slave_load_fileslog(struct slave_ctx *slave) {
 		vfs_set_checksum(file, checksum);
 
 		//SLAVES_DBG("Making %s available from %s", file->name, slave->name);
-		if(!collection_add_first(slave->offline_files, file)) {
+		if(!collection_add(slave->offline_files, file)) {
 			SLAVES_DBG("Collection error");
 			continue;
 		}
-		if(!collection_add_first(file->offline_from, slave)) {
+		if(!collection_add(file->offline_from, slave)) {
 			collection_delete(slave->offline_files, file);
 			SLAVES_DBG("Collection error");
 			continue;
@@ -272,8 +272,7 @@ unsigned int slave_load_fileslog(struct slave_ctx *slave) {
 	return 1;
 }
 
-unsigned int slave_dump_fileslog_callback(struct collection *c, void *item, void *param) {
-	struct vfs_element *file = item;
+int slave_dump_fileslog_callback(struct collection *c, struct vfs_element *file, void *param) {
 	char *path;
 	struct {
 		struct slave_ctx *slave;
@@ -313,10 +312,10 @@ unsigned int slave_dump_fileslog(struct slave_ctx *slave) {
 	}
 
 	/* iterate the available_files list of this connection and print everything to file  */
-	collection_iterate(slave->offline_files, slave_dump_fileslog_callback, &ctx);
+	collection_iterate(slave->offline_files, (collection_f)slave_dump_fileslog_callback, &ctx);
 	
 	if(slave->cnx) {
-		collection_iterate(slave->cnx->available_files, slave_dump_fileslog_callback, &ctx);
+		collection_iterate(slave->cnx->available_files, (collection_f)slave_dump_fileslog_callback, &ctx);
 	}
 
 	fclose(ctx.f);
@@ -335,11 +334,11 @@ unsigned int slave_mark_online_from(struct slave_connection *cnx, struct vfs_ele
 
 	//SLAVES_DBG("Making %s online from %s", file->name, cnx->slave->name);
 
-	if(!collection_add_first(cnx->available_files, file)) {
+	if(!collection_add(cnx->available_files, file)) {
 		SLAVES_DBG("Collection error");
 		return 1;
 	}
-	if(!collection_add_first(file->available_from, cnx)) {
+	if(!collection_add(file->available_from, cnx)) {
 		SLAVES_DBG("Collection error");
 		collection_delete(cnx->available_files, file);
 		return 1;
@@ -371,11 +370,11 @@ unsigned int slave_mark_offline_from(struct slave_ctx *slave, struct vfs_element
 		}
 	}
 
-	if(!collection_add_first(slave->offline_files, file)) {
+	if(!collection_add(slave->offline_files, file)) {
 		SLAVES_DBG("Collection error");
 		return 1;
 	}
-	if(!collection_add_first(file->offline_from, slave)) {
+	if(!collection_add(file->offline_from, slave)) {
 		SLAVES_DBG("Collection error");
 		collection_delete(slave->offline_files, file);
 		return 1;
@@ -488,6 +487,52 @@ unsigned int slave_remove_deletelog_files(struct slave_ctx *slave) {
 	return count;
 }
 
+static void slave_obj_destroy(struct slave_ctx *slave) {
+	
+	collectible_destroy(slave);
+
+	/* kick the connected slave */
+	if(slave->cnx) {
+		slave_connection_destroy(slave->cnx);
+		slave->cnx = NULL;
+	}
+
+	collection_delete(slaves, slave);
+
+	/* delete the file */
+	if(slave->config) {
+		config_destroy(slave->config);
+		slave->config = NULL;
+	}
+	if(slave->fileslog) {
+		free(slave->fileslog);
+		slave->fileslog = NULL;
+	}
+	if(slave->deletelog) {
+		free(slave->deletelog);
+		slave->deletelog = NULL;
+	}
+
+	if(slave->name) {
+		free(slave->name);
+		slave->name = NULL;
+	}
+
+	if(slave->sections) {
+		while(collection_size(slave->sections)) {
+			struct vfs_section *first = collection_first(slave->sections);
+			section_unlink_slave(first, slave);
+			collection_delete(slave->sections, first);
+		}
+		collection_destroy(slave->sections);
+		slave->sections = NULL;
+	}
+
+	free(slave);
+
+	return;
+}
+
 struct slave_ctx *slave_load(const char *filename) {
 	struct slave_ctx *slave;
 	char *name;
@@ -549,6 +594,9 @@ struct slave_ctx *slave_load(const char *filename) {
 		free(name);
 		return NULL;
 	}
+	
+	obj_init(&slave->o, slave, (obj_f)slave_obj_destroy);
+	collectible_init(slave);
 
 	slave->config = config_new(fullpath, SLAVES_CONFIG_TIMEOUT);
 	free(fullpath);
@@ -592,8 +640,8 @@ struct slave_ctx *slave_load(const char *filename) {
 
 	slave->lastonline = config_read_int(slave->config, "last-online", 0);
 
-	slave->sections = collection_new();
-	slave->offline_files = collection_new();
+	slave->sections = collection_new(C_NONE);
+	slave->offline_files = collection_new(C_NONE);
 	collection_add(slaves, slave);
 
 	/* try to load the fileslog */
@@ -706,6 +754,9 @@ struct slave_ctx *slave_new(const char *name) {
 		free(fullpath);
 		return NULL;
 	}
+	
+	obj_init(&slave->o, slave, (obj_f)slave_obj_destroy);
+	collectible_init(slave);
 
 	slave->config = config_new(fullpath, SLAVES_CONFIG_TIMEOUT);
 	free(fullpath);
@@ -737,8 +788,8 @@ struct slave_ctx *slave_new(const char *name) {
 	}
 	config_write(slave->config, "name", name);
 
-	slave->sections = collection_new();
-	slave->offline_files = collection_new();
+	slave->sections = collection_new(C_NONE);
+	slave->offline_files = collection_new(C_NONE);
 	collection_add(slaves, slave);
 
 	slave_dump(slave);
@@ -784,54 +835,35 @@ unsigned int slave_dump(struct slave_ctx *slave) {
 	return 1;
 }
 
+
+void slave_destroy(struct slave_ctx *slave) {
+	
+	collection_void(slave->sections);
+	collection_void(slave->offline_files);
+	
+	obj_destroy(&slave->o);
+	
+	return;
+}
+
 /* save the slave infos to file */
-unsigned int slave_del(struct slave_ctx *slave) {
+unsigned int slave_delete(struct slave_ctx *slave) {
 
 	if(!slave) return 0;
-
-	/* kick the connected slave */
-	if(slave->cnx) {
-		slave_connection_destroy(slave->cnx);
-		slave->cnx = NULL;
-	}
-
-	collection_delete(slaves, slave);
-
-	/* delete the file */
-	if(slave->config) {
+	
+	/* delete the files */
+	if(slave->config && slave->config->filename) {
 		remove(slave->config->filename);
-		config_destroy(slave->config);
-		slave->config = NULL;
 	}
 	if(slave->fileslog) {
 		remove(slave->fileslog);
-		free(slave->fileslog);
-		slave->fileslog = NULL;
 	}
 	if(slave->deletelog) {
 		remove(slave->deletelog);
-		free(slave->deletelog);
-		slave->deletelog = NULL;
 	}
-
-	if(slave->name) {
-		free(slave->name);
-		slave->name = NULL;
-	}
-
-	if(slave->sections) {
-		collection_void(slave->sections);
-		while(collection_size(slave->sections)) {
-			void *first = collection_first(slave->sections);
-			section_unlink_slave(first, slave);
-			collection_delete(slave->sections, first);
-		}
-		collection_destroy(slave->sections);
-		slave->sections = NULL;
-	}
-
-	free(slave);
-
+	
+	slave_destroy(slave);
+	
 	return 1;
 }
 
@@ -1037,15 +1069,6 @@ unsigned int slave_rename(
 }
 */
 
-
-int make_sfvlog_query(struct slave_connection *cnx, struct collection *sfvfiles) {
-	unsigned int length;
-	char *buffer;
-
-
-	return 1;
-}
-
 unsigned int file_list_query_cleanup_offline_files(struct collection *c, struct vfs_element *file, struct slave_ctx *slave) {
 
 	collection_delete(slave->offline_files, file);
@@ -1055,7 +1078,7 @@ unsigned int file_list_query_cleanup_offline_files(struct collection *c, struct 
 	if(!collection_size(file->offline_from) &&
 			!collection_size(file->available_from) &&
 			!collection_size(file->mirror_to)) {
-		SLAVES_DBG("File %s is no longer available from %s", file->name, slave->name);
+		//SLAVES_DBG("File %s is no longer available from %s", file->name, slave->name);
 		vfs_recursive_delete(file);
 
 		// TODO: delete the whole directory tree when it's empty
@@ -1072,7 +1095,7 @@ unsigned int file_list_query_cleanup_offline_files(struct collection *c, struct 
 static unsigned int file_list_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 	unsigned int length = 0;
 	struct file_list_entry *entry;
-	unsigned int total_files = 0, total_sfv = 0;
+	unsigned int total_files = 0;
 	unsigned long long int total_size = 0;
 	struct vfs_element *element;
 	//char *ptr;
@@ -1096,7 +1119,7 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 
 	t = time_now();
 
-	sfv_files = collection_new();
+	sfv_files = collection_new(C_NONE);
 
 	entry = (struct file_list_entry *)p->data;
 	while(length > sizeof(struct file_list_entry)) {
@@ -1136,14 +1159,13 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 
 		slave_mark_online_from(cnx, element);
 
-		/* if the file was .sfv then request its infos */
-		namelen = strlen(element->name);
-		if((namelen > 4) && !stricmp(&element->name[namelen-4], ".sfv")) {
-			total_sfv++;
-			collection_add_first(sfv_files, element);
-			/*if(!make_sfv_query(cnx, element)) {
-				SLAVES_DBG("%I64u: Could not make sfv file %s", p->uid, element->name);
-			}*/
+		/* if we don't have the sfv yet ... */
+		if(!element->sfv) {
+			/* if the file was .sfv then request its infos */
+			namelen = strlen(element->name);
+			if((namelen > 4) && !stricmp(&element->name[namelen-4], ".sfv")) {
+				collection_add(sfv_files, element);
+			}
 		}
 
 		entry = (struct file_list_entry *)((char*)entry + entry->entry_size);
@@ -1155,19 +1177,20 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 	/* dump the files to the fileslog. */
 	//slave_dump_fileslog(cnx->slave);
 	SLAVES_DBG("%I64u: Slave sent %u files (%I64u bytes), we queried for %u sfv in %I64u ms.", p->uid,
-		total_files, total_size, total_sfv, timer(t));
-
+		total_files, total_size, collection_size(sfv_files), timer(t));
+	
 	/* add th slave to the ready connections */
 	collection_delete(connecting_slaves, cnx);
-	if(!collection_add_first(connected_slaves, cnx)) {
+	if(!collection_add(connected_slaves, cnx)) {
 		SLAVES_DBG("Collection error");
 		collection_destroy(sfv_files);
 		return 0;
 	}
 
+	/* try to match any nukes with the files we've just got */
 	nuke_check_all();
 
-	//if(!collection_size(sfv_files)) {
+	if(!collection_size(sfv_files)) {
 		/* this was the last stage of the connection process.
 			now we will call the slave connection callback */
 		if(!event_onSlaveIdentSuccess(cnx)) {
@@ -1178,13 +1201,13 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 
 		/* from now on, this slave can send and receive files */
 		cnx->ready = 1;
-	/*} else {
+	} else {
 		if(!make_sfvlog_query(cnx, sfv_files)) {
 			SLAVES_DBG("Could NOT make SFV log query !");
 			collection_destroy(sfv_files);
 			return 0;
 		}
-	}*/
+	}
 
 	collection_destroy(sfv_files);
 
@@ -1303,6 +1326,12 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 	/* extract the diskfree */
 	SLAVES_DBG("%I64u: Slave %s connected with %I64u/%I64u bytes free", p->uid, hello->name, hello->diskfree, hello->disktotal);
 
+	cnx->platform = hello->platform;
+	SLAVES_DBG("%I64u: Slave's platform number is %u", p->uid, hello->platform);
+	
+	cnx->rev = hello->rev;
+	SLAVES_DBG("%I64u: Slave's revision number is %I64u", p->uid, hello->rev);
+	
 	cnx->timediff = (signed long long int)timer(hello->now);
 	SLAVES_DBG("%I64u: Slave's now is %I64u, self now is %I64u", p->uid, hello->now, time_now());
 	SLAVES_DBG("%I64u: Difference is %I64d", p->uid, cnx->timediff);
@@ -1518,11 +1547,10 @@ static unsigned int make_public_key_query(struct slave_connection *cnx) {
 	return 1;
 }
 
-static unsigned int count_size_of_files(struct collection *c, void *item, void *param) {
+static int count_size_of_files(struct collection *c, struct vfs_element *file, void *param) {
 	struct {
 		unsigned long long int size;
 	} *ctx = param;
-	struct vfs_element *file = item;
 
 	ctx->size += file->size;
 
@@ -1536,7 +1564,7 @@ unsigned long long int slave_files_size(struct slave_connection *cnx) {
 
 	if(!cnx) return 0;
 
-	collection_iterate(cnx->available_files, count_size_of_files, &ctx);
+	collection_iterate(cnx->available_files, (collection_f)count_size_of_files, &ctx);
 
 	return ctx.size;
 }
@@ -1582,13 +1610,13 @@ static unsigned int send_asynch_query_callback(struct collection *c, void *item,
 	return 0;
 }
 
-static unsigned int send_asynch_query(struct slave_connection *cnx) {
+static int send_asynch_query(struct slave_connection *cnx) {
 	struct {
 		unsigned int success;
 		struct slave_connection *cnx;
 	} ctx = { 0, cnx };
 
-	collection_iterate(cnx->asynch_queries, send_asynch_query_callback, &ctx);
+	collection_iterate(cnx->asynch_queries, (collection_f)send_asynch_query_callback, &ctx);
 
 	return ctx.success;
 }
@@ -1673,10 +1701,10 @@ int slaves_check_asynch_timeouts(struct collection *c, struct slave_asynch_comma
 	}
 
 	if(timer(cmd->send_time) > cmd->timeout) {
-		SLAVES_DBG("%I64u: Asynch timeout reached! (%u ms)", cmd->uid, cmd->timeout);
-
+		SLAVES_DBG("%I64u: Asynch timeout reached! (%u ms) packet type: %u", cmd->uid, cmd->timeout, cmd->command);
+		
 		asynch_destroy(cmd, NULL);
-
+		
 		return 1;
 	}
 
@@ -1839,7 +1867,7 @@ void slave_connection_destroy(struct slave_connection *cnx) {
 
 	return;
 }
-
+/*
 static int slave_connection_obj_destroy_mirror(struct collection *c, struct mirror_ctx *mirror, void *param) {
 
 	mirror_cancel(mirror);
@@ -1860,15 +1888,22 @@ static int slave_connection_obj_destroy_xfer(struct collection *c, struct ftpd_c
 
 	return 1;
 }
-
+*/
 void slave_connection_obj_destroy(struct slave_connection *cnx) {
 	unsigned long long int time;
 
 	time = time_now();
+	
+	collectible_destroy(cnx);
 
 	/* call the event */
 	if(cnx->slave) {
 		event_onSlaveDisconnect(cnx);
+	}
+
+	if(cnx->volatile_config) {
+		config_destroy(cnx->volatile_config);
+		cnx->volatile_config = NULL;
 	}
 
 	/* try to remove from both lists cuz we don't know in wich one it is */
@@ -1891,19 +1926,19 @@ void slave_connection_obj_destroy(struct slave_connection *cnx) {
 	}
 
 	/* cancel all mirrors operation */
-	collection_iterate(cnx->mirror_from, (collection_f)slave_connection_obj_destroy_mirror, NULL);
-	collection_iterate(cnx->mirror_to, (collection_f)slave_connection_obj_destroy_mirror, NULL);
+	//collection_iterate(cnx->mirror_from, (collection_f)slave_connection_obj_destroy_mirror, NULL);
+	//collection_iterate(cnx->mirror_to, (collection_f)slave_connection_obj_destroy_mirror, NULL);
 
 	/* free the asynch commands collections */
-	collection_iterate(cnx->asynch_queries, (collection_f)slave_connection_obj_destroy_asynch, NULL);
-	collection_iterate(cnx->asynch_response, (collection_f)slave_connection_obj_destroy_asynch, NULL);
+	//collection_iterate(cnx->asynch_queries, (collection_f)slave_connection_obj_destroy_asynch, NULL);
+	//collection_iterate(cnx->asynch_response, (collection_f)slave_connection_obj_destroy_asynch, NULL);
 
 	/*
 		xfers should be deleted in the process of deleting
 		the asynch command collections, but still clean
 		it up
 	*/
-	collection_iterate(cnx->xfers, (collection_f)slave_connection_obj_destroy_xfer, NULL);
+	//collection_iterate(cnx->xfers, (collection_f)slave_connection_obj_destroy_xfer, NULL);
 
 	/* release all files currently owned by the slave */
 	if(cnx->slave) {
@@ -1915,7 +1950,7 @@ void slave_connection_obj_destroy(struct slave_connection *cnx) {
 		cnx->slave->offline_files = temp;*/
 
 		while(collection_size(cnx->available_files)) {
-			void *first = collection_first(cnx->available_files);
+			struct vfs_element *first = collection_first(cnx->available_files);
 			if(cnx->slave) {
 				slave_mark_offline_from(cnx->slave, first);
 			} else {
@@ -1983,6 +2018,8 @@ int slave_connection_close(int fd, struct slave_connection *cnx) {
 
 	/*  */
 	slave_connection_destroy(cnx);
+	
+	SLAVES_DBG("Slave connection closed OK.");
 
 	return 1;
 }
@@ -1999,11 +2036,14 @@ struct slave_connection *slave_connection_new(int fd) {
 
 	//cnx->destroyed = 0;
 	obj_init(&cnx->o, cnx, (obj_f)slave_connection_obj_destroy);
+	collectible_init(cnx);
 
+	cnx->rev = 0;
+	
 	cnx->ready = 0;
 	cnx->slave = NULL;
 
-	cnx->group = collection_new();
+	cnx->group = collection_new(C_CASCADE);
 
 	cnx->last_command = IO_NOTHING;
 	memset(&cnx->io, 0, sizeof(cnx->io));
@@ -2019,22 +2059,35 @@ struct slave_connection *slave_connection_new(int fd) {
 
 	cnx->lagtime = 0;
 
-	cnx->asynch_queries = collection_new();
-	cnx->asynch_response = collection_new();
-	cnx->available_files = collection_new();
+	cnx->asynch_queries = collection_new(C_CASCADE);
+	cnx->asynch_response = collection_new(C_CASCADE);
+	cnx->available_files = collection_new(C_NONE);
 
 	/* xfers list */
-	cnx->xfers = collection_new();
+	cnx->xfers = collection_new(C_CASCADE);
 
 	/* mirrors */
-	cnx->mirror_from = collection_new();
-	cnx->mirror_to = collection_new();
+	cnx->mirror_from = collection_new(C_CASCADE);
+	cnx->mirror_to = collection_new(C_CASCADE);
+
+	cnx->volatile_config = config_new(NULL, 0);
+	if(!cnx->volatile_config) {
+		collection_destroy(cnx->group);
+		collection_destroy(cnx->mirror_to);
+		collection_destroy(cnx->mirror_from);
+		collection_destroy(cnx->xfers);
+		collection_destroy(cnx->available_files);
+		collection_destroy(cnx->asynch_response);
+		collection_destroy(cnx->asynch_queries);
+		free(cnx);
+		return NULL;
+	}
 
 	collection_add(connecting_slaves, cnx);
 
 	if(!event_onSlaveConnect(cnx)) {
-		
 		SLAVES_DBG("New slave rejected by onSlaveConnect");
+		config_destroy(cnx->volatile_config);
 		collection_delete(connecting_slaves, cnx);
 		collection_destroy(cnx->group);
 		collection_destroy(cnx->mirror_to);
@@ -2137,17 +2190,18 @@ int slaves_init() {
 
 	SLAVES_DBG("Loading ...");
 
-	slaves = collection_new();
+	slaves = collection_new(C_CASCADE);
 
-	connecting_slaves = collection_new();
-	connected_slaves = collection_new();
+	connecting_slaves = collection_new(C_CASCADE);
+	connected_slaves = collection_new(C_CASCADE);
 
 	slaves_port = 0;
-	slaves_group = collection_new();
+	slaves_group = collection_new(C_CASCADE);
 	slaves_fd = -1;
 
-	if(!vfs_root)
+	if(!vfs_root) {
 		vfs_root = vfs_create_root();
+	}
 
 	if(!slaves_load_config()) {
 		return 0;

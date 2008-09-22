@@ -39,7 +39,7 @@
 #include "constants.h"
 
 #ifndef NO_FTPD_DEBUG
-//#  define DEBUG_SFV
+#  define DEBUG_SFV
 #endif
 
 #ifdef DEBUG_SFV
@@ -56,14 +56,30 @@
 
 typedef struct sfv_entry sfv_entry;
 struct sfv_entry {
+	struct obj o;
+	struct collectible c;
+	
 	unsigned int crc;
 	char filename[];
 } __attribute__((packed));
 
 typedef struct sfv_ctx sfv_ctx;
 struct sfv_ctx {
+	struct obj o;
+	struct collectible c;
+	
 	struct collection *entries; /* collection of sfv_entry structures */
 	struct vfs_element *element;
+} __attribute__((packed));
+
+struct sfvlog_file {
+	unsigned short next; /* offset to the next file in the buffer, zero for the last */
+	char filename[]; /* name of this sfv file */
+} __attribute__((packed));
+
+struct sfvlog_entry {
+	unsigned int crc;
+	char filename[];
 } __attribute__((packed));
 
 unsigned int make_sfv_query(struct slave_connection *cnx, struct vfs_element *file);
@@ -71,5 +87,6 @@ struct sfv_entry *sfv_add_entry(struct sfv_ctx *sfv, char *filename, unsigned in
 struct sfv_entry *sfv_get_entry(struct sfv_ctx *sfv, char *filename);
 void sfv_delete(struct sfv_ctx *sfv);
 
+int make_sfvlog_query(struct slave_connection *cnx, struct collection *sfvfiles);
 
 #endif /* __SFV_H */

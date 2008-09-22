@@ -33,6 +33,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include <windows.h>
 
 #include "collection.h"
@@ -42,7 +43,137 @@
 	On any error with memory allocation, the program will shut down.
 */
 
-struct collection *collection_new() {
+collection_static_list(all_iterators);
+
+void *collection_c_next(struct collection *c, struct collection_iterator *iter);
+
+static void instance_destroy(struct collectible_instance *instance) {
+	
+	if(obj_isvalid(&instance->o)) {
+		/*
+			The obj_isvalid here protect us from decreasing the objects
+			count if it was already done before
+		*/
+		
+		instance->self->collectors.count--;
+		instance->c->collectibles.count--;
+		
+		obj_destroy(&instance->o);
+	}
+	
+	return;
+}
+
+void collection_iterator_destroy(struct collection_iterator *iter) {
+	
+	iter->next = NULL;
+	
+	collection_list_remove(&iter->iterators);
+	collection_list_remove(&iter->all_iterators);
+	
+	free(iter);
+	
+	return;
+}
+
+/* Empty the collection, call the destructors if needed */
+int collection_empty(struct collection *c) {
+//	struct collection_list *current, *next;
+	struct collection_iterator *iter;
+	struct collectible *cb;
+	
+	if(!c) {
+		COLLECTION_DBG("collection_empty: c == NULL");
+		return 0;
+	}
+
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_empty: 'c->o' is not valid");
+		return 0;
+	}
+	
+	obj_ref(&c->o);
+	
+	/* Unlink all collectibles */
+	iter=collection_new_iterator(c);
+	for(cb=collection_c_next(c, iter);cb;cb=collection_c_next(c, iter)) {
+		
+		/* remove the collectible from the collection. */
+		collection_c_delete(c, cb);
+		
+		/* Cascade delete he collectible if needed. */
+		if(c->destroy_type == C_CASCADE) {
+			/* We destroy the collectible's parent by destroying the collectible itself */
+			obj_destroy(&cb->o);
+		}
+	}
+	collection_iterator_destroy(iter);
+	
+	obj_unref(&c->o);
+	
+	return 1;
+}
+
+int collection_cleanup_iterators() {
+	struct collection_list *current, *next;
+	
+	current = all_iterators.next;
+	while(current != &all_iterators) {
+		struct collection_iterator *iter = CONTAINING_RECORD(current, struct collection_iterator, all_iterators);
+		next = current->next;
+		collection_iterator_destroy(iter);
+		current = next;
+	}
+	
+	return 1;
+}
+
+static void collection_obj_destroy(struct collection *c) {
+	struct collection_list *current, *next;
+	struct collection_iterator *iter;
+	struct collectible *cb;
+	
+	/* 1. Make sure the collection is void during this process */
+	c->is_void = 1;
+	/*
+	if(c->iterators.count) {
+		COLLECTION_DBG("collection_obj_destroy: ERROR: collection still contain %u iterators", c->iterators.count);
+	}
+	*/
+	/* 3. Unlink all collectibles */
+	iter = collection_new_iterator(c);
+	for(cb=collection_c_next(c, iter);cb;cb=collection_c_next(c, iter)) {
+		
+		/* remove the collectible from the collection. */
+		collection_c_delete(c, cb);
+		
+		/* Cascade delete he collectible if needed. */
+		if(c->destroy_type == C_CASCADE) {
+			/* We destroy the collectible's parent by destroying the collectible itself */
+			obj_destroy(&cb->o);
+		}
+	}
+	
+	/* 2. Destroy all iterators */
+	current = c->iterators.list.next;
+	while(current != &c->iterators.list) {
+		struct collection_iterator *iter = CONTAINING_RECORD(current, struct collection_iterator, iterators);
+		next = current->next;
+		collection_iterator_destroy(iter);
+		current = next;
+	}
+	
+	if(c->collectibles.count) {
+		COLLECTION_DBG("collection_obj_destroy: ERROR: collection still contain %u collectibles", c->collectibles.count);
+	}
+	
+	/* 4. Free the structure. */
+	free(c);
+	
+	return;
+}
+
+struct collection *collection_new(collection_destroy_type destroy_type) {
 	struct collection *c;
 
 	c = malloc(sizeof(struct collection));
@@ -50,18 +181,16 @@ struct collection *collection_new() {
 		COLLECTION_DBG("collection_new: malloc failed");
 		exit(1);
 	}
-
-	c->last_checked = NULL;
-	c->first = NULL;
-	c->current_uid = 1; /* start at 1, the uid 0 does not exist */
-
-	c->ordered = 1;
-	c->count = 0;
-
-	c->locked = 0;
-	c->deleted = 0;
-
+	
+	obj_init(&c->o, c, (obj_f)collection_obj_destroy);
+	c->destroy_type = destroy_type;
+	
 	c->is_void = 0;
+	
+	collection_counted_list_init(&c->iterators);
+	collection_counted_list_init(&c->collectibles);
+	
+//	c->last = NULL;
 
 	return c;
 }
@@ -88,71 +217,141 @@ int chk_collection_void(struct collection *c) {
 	return 1;
 }
 
-static void c_lock(struct collection *c) {
-
-	c->locked++;
-
-	return;
-}
-
-static void collection_free(struct collection *c) {
-	struct collection_item *current, *next;
-
-	current = c->first;
-	while(current) {
-		next = current->next;
-		free(current);
-		current = next;
-	}
-
-	free(c);
-
-	return;
-}
-
-/* return 1 if the item was destroyed due to its unlocking */
-static int c_unlock(struct collection *c) {
-
-	c->locked--;
-
-	if(!c->locked && c->deleted) {
-		collection_free(c);
-		return 1;
-	}
-
-	return 0;
-}
-
 void collection_destroy(struct collection *c) {
 
-	if(!c) {
-		COLLECTION_DBG("collection_destroy: c == NULL");
-		return;
-	}
-
-	if(c->locked) {
-		c->deleted = 1;
-	} else {
-		collection_free(c);
-	}
+	obj_destroy(&c->o);
 
 	return;
 }
 
-/* copy the contents of collection a to collection b */
-// int collection_copy(a, b)
+static void collectible_obj_destroy(struct collectible *cb) {
+	struct collection_list *current, *next;
+//	struct obj *self;
+	
+	/* 1. Unlink the collectible from all of its collections */
+	current = cb->collectors.list.next;
+	while(current != &cb->collectors.list) {
+		struct collectible_instance *instance = CONTAINING_RECORD(current, struct collectible_instance, collectors);
+		next = current->next;
+		
+		instance_destroy(instance);
+		
+		current = next;
+	}
+	
+	if(cb->collectors.count) {
+		COLLECTION_DBG("collection_obj_destroy: ERROR: collectible still linked to %u collections", cb->collectors.count);
+	}
+	
+	/* 2. At the very end, call for the parent object's destruction */
+	//self = cb->self;
+	//cb->self = NULL; /* don't null it here cuz if it's locked it won't be destroyed untill unlock so we might need this ref still */
+	
+	if(cb->self) {
+		obj_destroy(cb->self);
+	}
+	
+	/*
+		As the collectible structure is embedded in a parent
+		structure, after calling the destroy method may very
+		well free the memory associated with this collectible
+	*/
+	
+	return;
+}
 
-/* add an element to the end of collection */
-/*unsigned int collection_add(struct collection *c, void *item) {
-	struct collection_item *citem, *current;
+int collectible_c_init(struct collectible *cb, struct obj *self) {
+	
+	obj_init(&cb->o, cb, (obj_f)collectible_obj_destroy);
+	collection_counted_list_init(&cb->collectors);
+	
+	cb->self_locked = 0;
+	cb->self = self;
+	
+	return 1;
+}
+
+void collectible_c_destroy(struct collectible *cb) {
+	unsigned int i;
+	
+	if(cb->self_locked) {
+		COLLECTION_DBG("collectible_destroy: Unreferencing %u times", cb->self_locked);
+		for(i=0;i<cb->self_locked;i++) {
+			obj_unref(cb->self);
+		}
+		cb->self_locked = 0;
+	}
+	cb->self = NULL;
+	obj_destroy(&cb->o);
+	
+	return;
+}
+
+static void instance_obj_destroy(struct collectible_instance *instance) {
+	struct collection_list *current, *next;
+	
+	/* Update all iterators to unreference this instance */
+	current = instance->c->iterators.list.next;
+	while(current != &instance->c->iterators.list) {
+		struct collection_iterator *iter = CONTAINING_RECORD(current, struct collection_iterator, iterators);
+		next = current->next;
+		
+		if(iter->next == instance) {
+			if(&instance->c->collectibles.list == instance->collectibles.next) {
+				//COLLECTION_DBG("Iteration is over.");
+				iter->next = NULL;
+			} else {
+				iter->next = CONTAINING_RECORD(instance->collectibles.next, struct collectible_instance, collectibles);
+			}
+		}
+		current = next;
+	}
+	
+	/* Make this instance unaccessible from the collectible */
+	collection_list_remove(&instance->collectors);
+	
+	/* Make this instance unaccessible from its collection */
+	collection_list_remove(&instance->collectibles);
+	
+	instance->c = NULL;
+	instance->self = NULL;
+	
+	/* Free the memory */
+	free(instance);
+	
+	return;
+}
+
+/* add an element at the beginning of a collection */
+int collection_c_add(struct collection *c, struct collectible *cb) {
+	struct collectible_instance *instance;
 
 	if(!c) {
 		COLLECTION_DBG("collection_add: c == NULL");
 		return 0;
 	}
+	
+	if(!cb) {
+		COLLECTION_DBG("collection_add: cb == NULL");
+		return 0;
+	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_add: collection is deleted");
+	/*
+		Check the validity of all implied objects so
+		we don't link during destruction
+	*/
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_add: collection's object is invalid");
+		return 0;
+	}
+
+	if(!obj_isvalid(&cb->o)) {
+		COLLECTION_DBG("collection_add: collectible's object is invalid");
+		return 0;
+	}
+
+	if(!obj_isvalid(cb->self)) {
+		COLLECTION_DBG("collection_add: collectible's 'self' is invalid");
 		return 0;
 	}
 
@@ -161,257 +360,190 @@ void collection_destroy(struct collection *c) {
 		return 0;
 	}
 
-	if(!item) {
-		COLLECTION_DBG("collection_add: warning: item == NULL");
-		return 0;
-	}
-
-	citem = malloc(sizeof(struct collection_item));
-	if(!citem) {
-		COLLECTION_DBG("collection_add: malloc failed");
+	instance = malloc(sizeof(struct collectible_instance));
+	if(!instance) {
+		logging_write("fatal.log", "collection_add: malloc failed");
 		exit(1);
 	}
-
-	citem->locked = 0;
-	citem->deleted = 0;
-	citem->uid = c->current_uid++;
-	citem->item = item;
-	citem->next = NULL;
-
-	if(!c->first) {
-		c->first = citem;
-	}
-	else {
-		current = c->first;
-		while(current->next) {
-			current = current->next;
-		}
-		current->next = citem;
-	}
 	
-	c->last_checked = citem;
-
-	c->count++;
+	obj_init(&instance->o, instance, (obj_f)instance_obj_destroy);
 	
-	return 1;
-}*/
+	/* Make the link with the parent collectible */
+	cb->collectors.count++;
+	collection_list_addfirst(&cb->collectors.list, &instance->collectors);
+	instance->self = cb;
 
-/* add an element at the beginning of a collection */
-unsigned int collection_add(struct collection *c, void *item) {
-	struct collection_item *citem;
-
-	if(!c) {
-		COLLECTION_DBG("collection_add_first: c == NULL");
-		return 0;
-	}
-
-	if(c->deleted) {
-		COLLECTION_DBG("collection_add_first: collection is deleted");
-		return 0;
-	}
-
-	if(c->is_void) {
-		COLLECTION_DBG("collection_add_first: collection is void");
-		return 0;
-	}
-
-	citem = malloc(sizeof(struct collection_item));
-	if(!citem) {
-		logging_write("fatal.log", "collection_add_first: malloc failed");
-		exit(1);
-	}
-
-	citem->locked = 0;
-	citem->deleted = 0;
-	citem->uid = c->current_uid++;
-	citem->item = item;
-	citem->next = c->first;
-	c->first = citem;
-
-	c->last_checked = citem;
-
-	c->ordered = 0;
-	c->count++;
-
+	/* Make the link with the parent collection */
+	instance->c = c;
+	c->collectibles.count++;
+	collection_list_addfirst(&c->collectibles.list, &instance->collectibles);
+	
+	/* Mark this collectible as the last modified in the collection */
+//	c->last = cb;
+	
 	return 1;
 }
 
-/* return 1 if the element is in the collection */
-unsigned int collection_find(struct collection *c, void *item) {
-	struct collection_item *current;
+/*
+	Given a collection and a collectible, return the associative
+	instance in the shortest way possible.
+*/
+static struct collectible_instance *associative_instance(struct collection *c, struct collectible *cb) {
+	struct collection_list *current, *next;
+	
+	/*
+		Iterate the smallest list between the collection
+		and the collectible's list and check if the other
+		object is linked via the collectible_instance
+		structure.
+	*/
+	if(c->collectibles.count < cb->collectors.count) {
+		/* Iterate the collection's instances and check for instance.self == cb */
+		
+		current = c->collectibles.list.next;
+		while(current != &c->collectibles.list) {
+			struct collectible_instance *instance = CONTAINING_RECORD(current, struct collectible_instance, collectibles);
+			next = current->next;
+			
+			if(instance->self == cb) {
+				/*
+					We've found the collectible to be in one of the
+					collection's instance ...
+				*/
+//				c->last = cb;
+				return instance;
+			}
+			
+			current = next;
+		}
+	} else {
+		/* Iterate the collectible's instances and check for instance.c == c */
+		
+		current = cb->collectors.list.next;
+		while(current != &cb->collectors.list) {
+			struct collectible_instance *instance = CONTAINING_RECORD(current, struct collectible_instance, collectors);
+			next = current->next;
+			
+			if(instance->c == c) {
+				/*
+					We've found the collection to be in one of the
+					collectible's instances ...
+				*/
+//				c->last = cb;
+				return instance;
+			}
+			
+			current = next;
+		}
+	}
+	
+	return NULL;
+}
 
+/* return 1 if the element is in the collection */
+int collection_c_find(struct collection *c, struct collectible *cb) {
+	struct collectible_instance *instance;
 	if(!c) {
 		COLLECTION_DBG("collection_find: c == NULL");
 		return 0;
 	}
-
-	if(c->deleted) {
-		COLLECTION_DBG("collection_find: collection is deleted");
+	
+	if(!cb) {
+		COLLECTION_DBG("collection_find: cb == NULL");
 		return 0;
 	}
-
-	if(c->last_checked) {
-		if(c->last_checked->item == item && !c->last_checked->deleted) {
-			return 1;
-		}
+	
+	instance = associative_instance(c, cb);
+	if(!instance) {
+		return 0;
 	}
-
-	current = c->first;
-	while(current) {
-
-		if((current->item == item) && !current->deleted) {
-			c->last_checked = current;
-			return 1;
-		}
-
-		current = current->next;
+	
+	if(!obj_isvalid(&instance->o)) {
+		return 0;
 	}
-
-	return 0;
+	
+	return 1;
 }
 
-/* unlink an item from its position in the list. the item is still valid */
-static unsigned int unlink_item(struct collection *c, struct collection_item *item) {
-	struct collection_item *current;
-
-	if(c->last_checked == item) {
-		c->last_checked = NULL;
-	}
-
-	if(c->first == item) {
-		c->first = item->next;
-		item->next = NULL;
-		return 1;
-	}
-
-	current = c->first;
-	while(current) {
-
-		if(current->next == item) {
-			current->next = item->next;
-			item->next = NULL;
-			return 1;
-		}
-
-		current = current->next;
-	}
-
-	return 0;
-}
-
-/* delete an element from the collection */
-unsigned int chk_collection_delete(struct collection *c, void *item) {
-	struct collection_item *current;
+/*
+	Delete the collectible from the collection
+*/
+int chk_collection_c_delete(struct collection *c, struct collectible *cb) {
+	struct collectible_instance *instance;
 
 	if(!c) {
 		COLLECTION_DBG("collection_delete: c == NULL");
 		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_delete: collection is deleted");
+	if(!cb) {
+		COLLECTION_DBG("collection_delete: cb == NULL");
 		return 0;
 	}
 
-	if(c->last_checked) {
-		if(!c->last_checked->deleted) {
-			if(c->last_checked->item == item) {
-				// DON'T NULL THIS OUT!
-				//c->last_checked->item = NULL;
-				if(c->last_checked->locked) {
-					c->last_checked->deleted = 1;
-				} else {
-					current = c->last_checked;
-					unlink_item(c, current);
-					free(current);
-				}
-				c->count--;
-				return 1;
-			}
-		}
-	}
-
-	current = c->first;
-	while(current) {
-
-		if(!current->deleted) {
-			if(current->item == item) {
-				// DON'T NULL THIS OUT!
-				//current->item = NULL;
-				if(current->locked) {
-					current->deleted = 1;
-				} else {
-					unlink_item(c, current);
-					free(current);
-				}
-				c->count--;
-				return 1;
-			}
-		}
-
-		current = current->next;
+	instance = associative_instance(c, cb);
+	if(!instance) {
+		COLLECTION_DBG("collection_delete: no associative instance between collection and collectible");
+		return 0;
 	}
 	
-	COLLECTION_DBG("collection_delete: could not delete %08x", (int)item);
-
+	if(obj_isvalid(&instance->o)) {
+		
+		
+		//COLLECTION_DBG("instance destroyed: %08x", (int)instance);
+		instance_destroy(instance);
+		return 1;
+	}
+	
 	return 0;
 }
 
-/* move an item to the last position in the collection */
-unsigned int collection_movelast(struct collection *c, void *item) {
-	struct collection_item *current = NULL, *found = NULL;
+/*
+	Move the collectible to the last position in the collection
+	If you use this function while iterating a collection, the
+	result will be an indefinite iteration.
+*/
+int collection_c_movelast(struct collection *c, struct collectible *cb) {
+	struct collectible_instance *instance;
 
 	if(!c) {
 		COLLECTION_DBG("collection_movelast: c == NULL");
 		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_movelast: collection is deleted");
+	if(!cb) {
+		COLLECTION_DBG("collection_movelast: cb == NULL");
 		return 0;
 	}
 
-	if(c->last_checked) {
-		if((c->last_checked->item == item) && !c->last_checked->deleted) {
-			found = c->last_checked;
-			current = c->last_checked;
-		}
-	}
-
-	if(!found  && !current) {
-		current = c->first;
-		while(current) {
-
-			if((current->item == item) && !current->deleted) {
-				found = current;
-				break;
-			}
-
-			current = current->next;
-		}
-	}
-
-	if(!found || !current) {
-		COLLECTION_DBG("collection_movelast: was not found in the collection");
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_movelast: 'c->o' is not valid");
 		return 0;
 	}
 
-	if(!current->next) {
-		/* already last in the collection... */
-		//COLLECTION_DBG("collection_movelast: was already last in the collection");
-		return 1;
+	if(!obj_isvalid(&cb->o)) {
+		COLLECTION_DBG("collection_movelast: 'cb->o' is not valid");
+		return 0;
 	}
 
-	current = current->next;
-	unlink_item(c, found);
-
-	while(current->next) {
-		current = current->next;
+	if(!obj_isvalid(cb->self)) {
+		COLLECTION_DBG("collection_movelast: 'cb->self' is not valid");
+		return 0;
 	}
 
-	current->next = found;
-	c->last_checked = found;
-	c->ordered = 0;
+	instance = associative_instance(c, cb);
+	if(!instance) {
+		COLLECTION_DBG("collection_movelast: no associative instance between collection and collectible");
+		return 0;
+	}
+	
+	if(!obj_isvalid(&instance->o)) {
+		return 0;
+	}
+
+	/* Delete from its current position, and add again at the end of the same collection */
+	collection_list_remove(&instance->collectibles);
+	collection_list_addlast(&c->collectibles.list, &instance->collectibles);
 
 	return 1;
 }
@@ -424,327 +556,335 @@ unsigned int collection_size(struct collection *c) {
 		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_size: collection is deleted");
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_size: 'c->o' is not valid");
 		return 0;
 	}
 
-	return c->count;
+	return c->collectibles.count;
 }
 
-static void lock(struct collection *c, struct collection_item *item) {
+/*
+	Lock a collectible so it won't be deleted until it is unlocked.
+*/
+int collection_c_lock(struct collection *c, struct collectible *cb) {
+	struct collectible_instance *instance;
 
-	item->locked++;
-
-	return;
-}
-
-/* return 1 if the item was destroyed due to its unlocking */
-static int unlock(struct collection *c, struct collection_item *item) {
-
-	if(!item->locked) {
-		COLLECTION_DBG("WARNING!!! unbalanced lock/unlock!");
-		return 0;
-	}
-
-	item->locked--;
-
-	if(!item->locked && item->deleted) {
-		unlink_item(c, item);
-		free(item);
-		return 1;
-	}
-
-	return 0;
-}
-
-unsigned int collection_lock(struct collection *c, void *element) {
-	struct collection_item *current;
 
 	if(!c) {
 		COLLECTION_DBG("collection_lock: c == NULL");
 		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_lock: collection is deleted");
+	if(!cb) {
+		COLLECTION_DBG("collection_lock: cb == NULL");
 		return 0;
 	}
 
-	if(c->last_checked) {
-		if((c->last_checked->item == element) && !c->last_checked->deleted) {
-			lock(c, c->last_checked);
-			return 1;
-		}
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_lock: 'c->o' is not valid");
+		return 0;
 	}
 
-	current = c->first;
-	while(current) {
-		
-		if((element == current->item) && !current->deleted) {
-			lock(c, current);
-			return 1;
-		}
-
-		current = current->next;
+	if(!obj_isvalid(&cb->o)) {
+		COLLECTION_DBG("collection_lock: 'c->o' is not valid");
+		return 0;
 	}
 
-	return 0;
+	if(!obj_isvalid(cb->self)) {
+		COLLECTION_DBG("collection_lock: 'c->self' is not valid");
+		return 0;
+	}
+
+	if(c->is_void) {
+		COLLECTION_DBG("collection_lock: collection is void");
+		return 0;
+	}
+
+	instance = associative_instance(c, cb);
+	if(!instance) {
+		COLLECTION_DBG("collection_lock: no associative instance between collection and collectible");
+		return 0;
+	}
+	
+	if(!obj_isvalid(&instance->o)) {
+		COLLECTION_DBG("collection_lock: associative instance is invalid");
+		return 0;
+	}
+	
+	/*
+		Reference both the collectible and the collection so none
+		of them will be deleted during the lock. Also, just to be sure,
+		lock the collectible's parent object.
+	*/
+	obj_ref(&c->o);
+	obj_ref(&cb->o);
+	obj_ref(cb->self);
+	cb->self_locked++;
+	obj_ref(&instance->o);
+
+	return 1;
 }
 
 /* return 1 if the item was destroyed due to its unlocking */
-unsigned int collection_unlock(struct collection *c, void *element) {
-	struct collection_item *current;
+int collection_c_unlock(struct collection *c, struct collectible *cb) {
+	struct collectible_instance *instance;
+	int ret;
 
 	if(!c) {
 		COLLECTION_DBG("collection_unlock: c == NULL");
 		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_unlock: collection is deleted");
+	if(!cb) {
+		COLLECTION_DBG("collection_unlock: cb == NULL");
 		return 0;
 	}
 
-	if(c->last_checked) {
-		if(c->last_checked->item == element) {
-			return unlock(c, c->last_checked);
-		}
+	/*
+		The instance may no longer exist at the time of the unlocking.
+		The caller must make sure he unlock the right element from the
+		right collection.
+	*/
+	instance = associative_instance(c, cb);
+	if(!instance) {
+		COLLECTION_DBG("collection_unlock: no associative instance between collection and collectible");
+		return 0;
 	}
+	
+	ret = (!obj_isvalid(cb->self) || !obj_isvalid(&cb->o));
 
-	current = c->first;
-	while(current) {
-		
-		if(element == current->item) {
-			return unlock(c, current);
-		}
-
-		current = current->next;
-	}
-
-	COLLECTION_DBG("collection_unlock: %08x was nowhere to be unlocked... are you sure of your code?", (int)element);
-
-	return 0;
-}
-
-void collection_debug(struct collection *c) {
-	struct collection_item *current;
-
-	if(!c) {
-		COLLECTION_DBG("collection_iterate: c == NULL");
-		return;
-	}
-
-	COLLECTION_DBG("collection_debug: starting");
-
-	COLLECTION_DBG("ordered: %u", c->ordered);
-	COLLECTION_DBG("count: %u", c->count);
-	COLLECTION_DBG("locked: %u", c->locked);
-	COLLECTION_DBG("deleted: %u", c->deleted);
-	COLLECTION_DBG("first: %08x", (int)c->first);
-
-	current = c->first;
-	while(current) {
-
-		COLLECTION_DBG("%08x: locked: %u", (int)current, (int)current->locked);
-		COLLECTION_DBG("%08x: deleted: %u", (int)current, (int)current->deleted);
-		COLLECTION_DBG("%08x: item: %08x", (int)current, (int)current->item);
-		COLLECTION_DBG("%08x: next: %08x", (int)current, (int)current->next);
-
-		current = current->next;
-	}
-
-	COLLECTION_DBG("collection_debug: over");
-
-	return;
+	/* The unreferencing must be in this exact order */
+	obj_unref(&instance->o); /* associative instance NEED 'c' and 'cb' */
+	cb->self_locked--;
+	obj_unref(&cb->o); /* 'cb' NEED 'cb->self' AND 'c' */
+	if(cb->self) obj_unref(cb->self); /* the collectible's parent must be destroyed *after* its collectible. */
+	obj_unref(&c->o); /* needs nothing, when this is destroyed everything else should be GONE. */
+	
+	return ret;
 }
 
 /* iterate the collection */
 /* return 1 if the iteration was completed */
-unsigned int collection_iterate(struct collection *c, unsigned int (*callback)(struct collection *c, void *item, void *param), void *param) {
-	struct collection_item *current, *next;
-	unsigned int ret;
+int collection_iterate(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param) {
+//	struct collection_list *current, *next;
+	struct collection_iterator *iter;
+	struct collectible *cb;
+	int ret;
 
 	if(!c) {
 		COLLECTION_DBG("collection_iterate: c == NULL");
 		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_iterate: collection is deleted");
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_iterate: 'c->o' is not valid");
 		return 0;
 	}
 
-	c_lock(c);
-
-	current = c->first;
-	while(current) {
-		if(!current->deleted) {
-
-			lock(c, current);
-
-			c->last_checked = current;
-			ret = (*callback)(c, current->item, param);
-			next = current->next;
-
-			unlock(c, current);
-
-			if(c->deleted) {
-				COLLECTION_DBG("collection_iterate: deleted during iteration.");
-				break;
-			}
-
-			if(!ret) {
-				c_unlock(c);
-				return 0;
-			}
-
-			current = next;
-		} else {
-			/* skip if already deleted */
-			current = current->next;
+	obj_ref(&c->o);
+	
+	iter = collection_new_iterator(c);
+	//COLLECTION_DBG("collection_iterate: iter: %08x, iter->next: %08x", (int)iter, (int)iter->next);
+	for(cb=collection_c_next(c, iter);cb;cb=collection_c_next(c, iter)) {
+		//COLLECTION_DBG("collection_iterate: cb: %08x, cb->self: %08x", (int)cb, (int)cb->self);
+		
+		ret = (*callback)(c, obj_self(cb->self), param);
+		
+		if(!obj_isvalid(&c->o)) {
+			COLLECTION_DBG("collection_iterate: collection destroyed during iteration.");
+			break;
+		}
+		
+		if(!ret) {
+			obj_unref(&c->o);
+			collection_iterator_destroy(iter);
+			return 0;
 		}
 	}
-
-	c_unlock(c);
+	collection_iterator_destroy(iter);
+	
+	obj_unref(&c->o);
 
 	return 1;
 }
 
 /* iterate the collection */
 /* return the element chosen by the matcher */
-void *collection_match(struct collection *c, unsigned int (*callback)(struct collection *c, void *item, void *param), void *param) {
-	struct collection_item *current, *next;
-	unsigned int ret;
+void *collection_match(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param) {
+//	struct collection_list *current, *next;
+	struct collection_iterator *iter;
+	struct collectible *cb;
+	int ret;
 
 	if(!c) {
 		COLLECTION_DBG("collection_match: c == NULL");
-		return NULL;
+		return 0;
 	}
 
-	if(c->deleted) {
-		COLLECTION_DBG("collection_match: collection is deleted");
-		return NULL;
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_match: 'c->o' is not valid");
+		return 0;
 	}
 
-	c_lock(c);
-
-	current = c->first;
-	while(current) {
-		if(!current->deleted) {
-
-			lock(c, current);
-
-			c->last_checked = current;
-			ret = (*callback)(c, current->item, param);
-			next = current->next;
-
-			if(unlock(c, current)) {
-				/* deleted during unlock: bad, bad, bad */
-				COLLECTION_DBG("collection_match: deleting items while matching is bad behaviour.");
-			}
-
-			if(c->deleted) {
-				COLLECTION_DBG("collection_match: collection was deleted while matching");
-				break;
-			}
-
+	obj_ref(&c->o);
+	
+	iter = collection_new_iterator(c);
+	for(cb=collection_c_next(c, iter);cb;cb=collection_c_next(c, iter)) {
+		
+		collection_c_lock(c, cb);
+		
+		ret = (*callback)(c, obj_self(cb->self), param);
+		
+		if(!obj_isvalid(&c->o)) {
+			COLLECTION_DBG("collection_iterate: collection destroyed during iteration.");
+			break;
+		}
+		
+		if(!obj_isvalid(&cb->o) || !obj_isvalid(cb->self)) {
+			/* deleted during unlock: bad, bad, bad */
+			COLLECTION_DBG("collection_match: deleting items while matching is bad behaviour.");
+			collection_c_unlock(c, cb);
 			if(ret) {
-				c_unlock(c);
-				return current->item;
+				obj_unref(&c->o);
+				collection_iterator_destroy(iter);
+				return NULL;
 			}
-
-			current = next;
-		} else {
-			/* skip if already deleted */
-			current = current->next;
+			continue;
+		}
+		
+		collection_c_unlock(c, cb);
+		
+		if(ret) {
+			obj_unref(&c->o);
+			collection_iterator_destroy(iter);
+			return obj_self(cb->self);
 		}
 	}
-
-	c_unlock(c);
-
-	return NULL;
-}
-
-static void collection_order(struct collection *c) {
-	struct collection_item *current;
-	unsigned long long int uid = 1;
-
-	current = c->first;
-	while(current) {
-		current->uid = uid++;
-		current = current->next;
-	}
-
-	c->ordered = 1;
-
-	return;
-}
-
-/* get the next item from a uid and return the uid of the returned item */
-/* uid must be 0 on the first call */
-/* CANNOT BE USED along with collection_add_first at the same time */
-void *collection_next(struct collection *c, unsigned int *uid) {
-	struct collection_item *current;
-
-	if(!c) {
-		COLLECTION_DBG("collection_next: c == NULL");
-		return NULL;
-	}
-
-	if(!uid) {
-		COLLECTION_DBG("collection_next: uid == NULL");
-		return NULL;
-	}
-
-	if(c->deleted) {
-		COLLECTION_DBG("collection_next: collection is deleted");
-		return NULL;
-	}
-
-	/* order the collection if it's not ordered */
-	if(!c->ordered) {
-		collection_order(c);
-	}
-
-	if(c->last_checked && (c->last_checked->uid <= *uid)) {
-		current = c->last_checked;
-	} else {
-		current = c->first;
-	}
-
-	while(current) {
-		if((current->uid > *uid) && !current->deleted) {
-			c->last_checked = current;
-			*uid = current->uid;
-			return current->item;
-		}
-		current = current->next;
-	}
-
+	collection_iterator_destroy(iter);
+	
+	obj_unref(&c->o);
+	
 	return NULL;
 }
 
 void *collection_first(struct collection *c) {
-	struct collection_item *current;
+	struct collection_list *current;
 
 	if(!c) {
 		COLLECTION_DBG("collection_first: c == NULL");
 		return NULL;
 	}
-	if(c->deleted) {
-		COLLECTION_DBG("collection_first: collection is deleted");
-		return NULL;
+
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_first: 'c->o' is not valid");
+		return 0;
 	}
 
-	current = c->first;
-	while(current) {
-		if(!current->deleted) {
-			c->last_checked = current;
-			return current->item;
+	current = c->collectibles.list.next;
+	while(current != &c->collectibles.list) {
+		struct collectible_instance *instance = CONTAINING_RECORD(current, struct collectible_instance, collectibles);
+		struct collectible *cb = instance->self;
+		
+		if(obj_isvalid(&instance->o) && obj_isvalid(&cb->o) && obj_isvalid(cb->self)) {
+			
+			return obj_self(cb->self);
 		}
 		current = current->next;
 	}
 
+	return NULL;
+}
+
+struct collection_iterator *collection_new_iterator(struct collection *c) {
+	struct collection_iterator *iter;
+	
+	if(!c) {
+		COLLECTION_DBG("collection_iterator: c == NULL");
+		return NULL;
+	}
+
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_iterator: 'c->o' is not valid");
+		return 0;
+	}
+		
+	iter = malloc(sizeof(struct collection_iterator));
+	if(!iter) {
+		
+		exit(0);
+	}
+	
+	collection_list_init(&iter->iterators);
+	collection_list_init(&iter->all_iterators);
+	
+	c->iterators.count++;
+	collection_list_addfirst(&c->iterators.list, &iter->iterators);
+	collection_list_addfirst(&all_iterators, &iter->all_iterators);
+	
+	if(!collection_size(c)) {
+		iter->next = NULL;
+	} else {
+		iter->next = CONTAINING_RECORD(c->collectibles.list.next, struct collectible_instance, collectibles);
+	}
+	
+	return iter;
+}
+
+void *collection_c_next(struct collection *c, struct collection_iterator *iter) {
+	struct collection_list *current;
+	
+	if(!c) {
+		COLLECTION_DBG("collection_next: c == NULL");
+		return NULL;
+	}
+	
+	if(!obj_isvalid(&c->o)) {
+		COLLECTION_DBG("collection_next: isvalid(c)");
+		return NULL;
+	}
+
+	if(!iter) {
+		COLLECTION_DBG("collection_next: iter == NULL");
+		return NULL;
+	}
+
+	if(!iter->next) {
+		//COLLECTION_DBG("collection_next: iter have no next!");
+		return NULL;
+	}
+	
+	current = &iter->next->collectibles;
+	while(current != &c->collectibles.list) {
+		struct collectible_instance *instance = CONTAINING_RECORD(current, struct collectible_instance, collectibles);
+		struct collectible *cb = instance->self;
+		
+		if(obj_isvalid(&instance->o) && obj_isvalid(&cb->o) && obj_isvalid(cb->self)) {
+			
+			/* switch to the next instance */
+			if(&instance->c->collectibles.list == instance->collectibles.next) {
+				//COLLECTION_DBG("Iteration is over.");
+				iter->next = NULL;
+			} else {
+				iter->next = CONTAINING_RECORD(instance->collectibles.next, struct collectible_instance, collectibles);
+			}
+			
+			return cb;
+		}
+		current = current->next;
+	}
+
+	return NULL;
+}
+
+void *collection_next(struct collection *c, struct collection_iterator *iter) {
+	struct collectible *cb;
+	
+	cb = collection_c_next(c, iter);
+	if(cb) {
+		/* we found the instance we need to return this time. */
+		return obj_self(cb->self);
+	}
+	
 	return NULL;
 }

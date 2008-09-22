@@ -37,6 +37,8 @@
 #define __TREE_H
 
 #include "constants.h"
+#include "obj.h"
+#include "collection.h"
 
 #ifndef NO_FTPD_DEBUG
 //#  define DEBUG_TREE
@@ -52,9 +54,9 @@
 #  define TREE_DBG(format, arg...)
 #endif
 
-
 struct branch {
-	unsigned long long int uid;
+	struct obj o;
+	struct collectible c;
 
 	/* name of this level */
 	char *name;
@@ -66,7 +68,9 @@ struct branch {
 	struct collection *branches;
 } __attribute__((packed));
 
-unsigned int tree_add(struct collection *branches, char *trigger, char *handler);
+typedef int (*tree_f)(void *a, void *b);
+
+unsigned int tree_add(struct collection *branches, char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b));
 struct collection *tree_get(struct collection *branches, char *trigger, char **args);
 unsigned int tree_destroy(struct collection *branches);
 

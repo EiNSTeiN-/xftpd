@@ -406,6 +406,8 @@ static struct socket_monitor *socket_monitor_get_fd(int fd) {
 }
 
 static void socket_monitor_obj_destroy(struct socket_monitor *monitor) {
+	
+	collectible_destroy(monitor);
 
 	signal_unref(monitor->connect_signal);
 	monitor->connect_signal = NULL;
@@ -429,7 +431,6 @@ static void socket_monitor_obj_destroy(struct socket_monitor *monitor) {
 		SOCKET_DBG("ERROR!!! Could NOT delete the collection because it is NOT empty!");
 	}
 	
-	collection_delete(socket_monitors, monitor);
 	free(monitor);
 
 	return;
@@ -444,7 +445,7 @@ int socket_monitor_new(int fd, int connected, int listening) {
 	
 	if(!socket_monitors) {
 		/* happens on the first call */
-		socket_monitors = collection_new();
+		socket_monitors = collection_new(C_CASCADE);
 	}
 
 	monitor = socket_monitor_get_fd(fd);
@@ -461,11 +462,13 @@ int socket_monitor_new(int fd, int connected, int listening) {
 	}
 
 	obj_init(&monitor->o, monitor, (obj_f)socket_monitor_obj_destroy);
+	collectible_init(monitor);
+	
 	monitor->dead = 0;
 	monitor->connected = connected;
 	monitor->listening = listening;
 	monitor->fd = fd;
-	monitor->signals = collection_new();
+	monitor->signals = collection_new(C_NONE);
 
 	monitor->connect_signal = signal_get(monitor->signals, "socket-connect", 1);
 	signal_ref(monitor->connect_signal);
@@ -532,7 +535,14 @@ int socket_monitor_fd_closed(int fd) {
 	return 1;
 }
 
-static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fdset_monitors[], unsigned int nfds) {
+#define HANDLE_CLEANUP(_i) { \
+	collection_unlock(socket_monitors, fdset_monitors[_i]); \
+	obj_unref(&fdset_monitors[_i]->o); \
+	fdset_monitors[_i] = NULL; \
+}
+
+
+static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fdset_monitors[], /*void *fdset_locks[],*/ unsigned int nfds) {
 	unsigned int i;
 
 	for(i=0;i<nfds;i++) {
@@ -542,16 +552,12 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 		}
 
 		if(fdset[i].fd == -1) {
-			obj_unref(&fdset_monitors[i]->o);
-			collection_unlock(socket_monitors, fdset_monitors[i]);
-			fdset_monitors[i] = NULL;
+			HANDLE_CLEANUP(i);
 			continue;
 		}
 
 		if(fdset_monitors[i]->dead) {
-			obj_unref(&fdset_monitors[i]->o);
-			collection_unlock(socket_monitors, fdset_monitors[i]);
-			fdset_monitors[i] = NULL;
+			HANDLE_CLEANUP(i);
 			continue;
 		}
 
@@ -561,7 +567,10 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 			*/
 
 			if(!fdset_monitors[i]->connected) {
-				/* Well, that's a real error only if the socket isn't connected. */
+				/*
+					That's a real error only if the socket isn't
+					connected; else it's OOB data comming thru
+				*/
 				fdset_monitors[i]->dead = 1;
 			}
 
@@ -572,9 +581,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 			if(!fdset_monitors[i]->connected) {
 				obj_destroy(&fdset_monitors[i]->o);
 			}
-			obj_unref(&fdset_monitors[i]->o);
-			collection_unlock(socket_monitors, fdset_monitors[i]);
-			fdset_monitors[i] = NULL;
+			HANDLE_CLEANUP(i);
 			continue;
 		}
 
@@ -594,9 +601,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 				SOCKET_SIGNALS_DBG("fds[%08x] POLLRDNORM, connect at %08x", fdset[i].fd, (int)fdset_monitors[i]);
 				signal_raise(fdset_monitors[i]->connect_signal, (void *)fdset_monitors[i]->fd);
 
-				obj_unref(&fdset_monitors[i]->o);
-				collection_unlock(socket_monitors, fdset_monitors[i]);
-				fdset_monitors[i] = NULL;
+				HANDLE_CLEANUP(i);
 				continue;
 			}
 			
@@ -613,9 +618,8 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 				signal_raise(fdset_monitors[i]->close_signal, (void *)fdset_monitors[i]->fd);
 
 				obj_destroy(&fdset_monitors[i]->o);
-				obj_unref(&fdset_monitors[i]->o);
-				collection_unlock(socket_monitors, fdset_monitors[i]);
-				fdset_monitors[i] = NULL;
+				
+				HANDLE_CLEANUP(i);
 				continue;
 			}
 			
@@ -628,9 +632,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 
 				if(fdset_monitors[i]->dead) {
 					SOCKET_SIGNALS_DBG("fds[%08x] Deleted during read", fdset[i].fd);
-					obj_unref(&fdset_monitors[i]->o);
-					collection_unlock(socket_monitors, fdset_monitors[i]);
-					fdset_monitors[i] = NULL;
+					HANDLE_CLEANUP(i);
 					continue;
 				}
 			}
@@ -645,9 +647,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 				SOCKET_SIGNALS_DBG("fds[%08x] POLLWRNORM, connect at %08x", fdset[i].fd, (int)fdset_monitors[i]);
 				signal_raise(fdset_monitors[i]->connect_signal, (void *)fdset_monitors[i]->fd);
 
-				obj_unref(&fdset_monitors[i]->o);
-				collection_unlock(socket_monitors, fdset_monitors[i]);
-				fdset_monitors[i] = NULL;
+				HANDLE_CLEANUP(i);
 				continue;
 			}
 			else if(fdset_monitors[i]->connected) {
@@ -658,9 +658,8 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 
 				if(fdset_monitors[i]->dead) {
 					SOCKET_SIGNALS_DBG("fds[%08x] Deleted during write", fdset[i].fd);
-					obj_unref(&fdset_monitors[i]->o);
-					collection_unlock(socket_monitors, fdset_monitors[i]);
-					fdset_monitors[i] = NULL;
+					
+					HANDLE_CLEANUP(i);
 					continue;
 				}
 			}
@@ -671,9 +670,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 			signal_poll(fdset_monitors[i]->signals);
 		}
 
-		obj_unref(&fdset_monitors[i]->o);
-		collection_unlock(socket_monitors, fdset_monitors[i]);
-		fdset_monitors[i] = NULL;
+		HANDLE_CLEANUP(i);
 	}
 
 	return 1;
@@ -684,6 +681,7 @@ struct socket_poll_ctx {
 	struct pollfd fdset[FD_SETSIZE];
 	unsigned int nfds;
 	struct socket_monitor *fdset_monitors[FD_SETSIZE];
+	//void *fdset_locks[FD_SETSIZE];
 } __attribute__((packed));
 
 unsigned int socket_poll_monitors(struct collection *c, struct socket_monitor *monitor, void *param) {
@@ -696,6 +694,7 @@ unsigned int socket_poll_monitors(struct collection *c, struct socket_monitor *m
 
 	/* lock now, we'll unlock it when the poll will be over */
 	collection_lock(c, monitor);
+	/* increase ref count now so the monitor won't be deleted until we want it */
 	obj_ref(&monitor->o);
 
 	ctx->fdset_monitors[ctx->nfds] = monitor;
@@ -726,7 +725,7 @@ unsigned int socket_poll_monitors(struct collection *c, struct socket_monitor *m
 		}
 
 		//if(r) {
-			socket_handle_fdset(ctx->fdset, ctx->fdset_monitors, ctx->nfds);
+			socket_handle_fdset(ctx->fdset, ctx->fdset_monitors, /*ctx->fdset_locks,*/ ctx->nfds);
 		//}
 
 		ctx->nfds = 0;
@@ -744,14 +743,6 @@ int socket_poll() {
 
 	collection_iterate(socket_monitors, (collection_f)socket_poll_monitors, &ctx);
 
-	/*
-	socket_err_time = 0;
-	socket_read_time = 0;
-	socket_write_time = 0;
-	socket_connect_time = 0;
-	socket_close_time = 0;
-	*/
-
 	if(ctx.nfds) {
 		r = poll(ctx.fdset, ctx.nfds, 0);
 		if(r == -1) {
@@ -760,19 +751,11 @@ int socket_poll() {
 			ctx.count += r;
 
 		//if(r) {
-			socket_handle_fdset(ctx.fdset, ctx.fdset_monitors, ctx.nfds);
+			socket_handle_fdset(ctx.fdset, ctx.fdset_monitors, /*ctx.fdset_locks,*/ ctx.nfds);
 		//}
 
 		ctx.nfds = 0;
 	}
-	
-	/*
-	socket_last_err_time = socket_err_time;
-	socket_last_read_time = socket_read_time;
-	socket_last_write_time = socket_write_time;
-	socket_last_connect_time = socket_connect_time;
-	socket_last_close_time = socket_close_time;
-	*/
 
 	return ctx.count;
 }
