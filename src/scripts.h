@@ -38,25 +38,46 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SCRIPTS
+#include "debug.h"
+#if defined(DEBUG_SCRIPTS)
+# define SCRIPTS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
+#else
+# define SCRIPTS_DBG(format, arg...)
 #endif
 
-#ifdef DEBUG_SCRIPTS
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SCRIPTS_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SCRIPTS_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
-#else
-#  define SCRIPTS_DBG(format, arg...)
-#endif
+#include "luainit.h"
+
+extern struct collection *scripts;
+
+typedef struct script_ctx script_ctx;
+struct script_ctx {
+  struct obj o;
+  struct collectible c;
+  
+  lua_State *L;
+  char *filename;
+  
+  /* those collections will hold a copy of the pointers to 
+    all objects created specifically for this script. when the
+    script is unloaded and the collections are destroyed, all
+    objects in those collections will be destroyed as well,
+    effectively cleaning up everything that has to do with this
+    script (callbacks, handlers, timers, etc). */
+  struct collection *events; /* struct event_callback */
+  struct collection *irchandlers; /* struct irc_handler */
+  struct collection *mirrors; /* struct mirror_ctx */
+  struct collection *sitehandlers; /* struct site_handler */
+  struct collection *timers; /* struct timer_ctx */
+} __attribute__((packed));
 
 int scripts_init();
+int scripts_reload();
 void scripts_free();
 
-unsigned int scripts_loadall();
+/* get a script_ctx structure that correspond to the specified lua State. */
+struct script_ctx *script_resolve(lua_State *L);
 
-int equals(void *a, void *b);
+int scripts_load_directory(const char *dir);
+int scripts_load_file(const char *filename);
 
 #endif /* __SCRIPTS_H */

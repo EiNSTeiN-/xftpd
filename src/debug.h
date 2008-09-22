@@ -33,48 +33,70 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "mirror.h"
+#ifndef __DEBUG_H
+#define __DEBUG_H
 
-typedef struct {
-	unsigned int finished;
-	unsigned int pasv;
-	
-	/* transfer checksum */
-	unsigned int checksum;
-	unsigned long long int xfered; /* current size that has been transfered, updated by the stats */
-	unsigned long long int last_alive; /* last time it was reported by the stats */
+/* Uncomment the following line to globally disable all debugging,
+	even if DEBUG_TO_CONSOLE or DEBUG_TO_FILE are not commented */
+//#define DEBUG_DISABLE
 
-	slave_connection *cnx; /* slave connection */
-	vfs_element *file; /* transfered file */
-} mirror_side;
+/* Uncomment to log to console, else the logging goes to file */
+#define DEBUG_TO_CONSOLE
+#define DEBUG_TO_FILE
 
-typedef struct {
-	collectible c @ collectible;
-	
-	unsigned long long int uid; /* unique id shared with both slaves */
-	unsigned long long int timestamp; /* transfer start */
-	
-	config_file *volatile_config;
+/* select specific files to debug */
+#define DEBUG_ADIO
+#define DEBUG_ASYNCH
+#define DEBUG_BASE64
+#define DEBUG_BLOWFISH
+#define DEBUG_COLLECTION
+#define DEBUG_CONFIG
+#define DEBUG_CRYPTO
+#define DEBUG_EVENTS
+#define DEBUG_EVENTS_CALLS //*
+#define DEBUG_SLAVE
+#define DEBUG_SLAVE_DIALOG //*
+#define DEBUG_FTPD
+#define DEBUG_FTPD_DIALOG //*
+#define DEBUG_IO
+#define DEBUG_IRCCORE
+#define DEBUG_LUAINIT
+#define DEBUG_MAIN
+#define DEBUG_MIRROR
+#define DEBUG_NUKE
+#define DEBUG_OBJ
+#define DEBUG_PACKET //*
+#define DEBUG_PROXY
+#define DEBUG_SCRIPTS
+#define DEBUG_SECURE
+#define DEBUG_SFV
+#define DEBUG_SIGNAL
+#define DEBUG_SITE
+#define DEBUG_SLAVES
+#define DEBUG_SLAVES_DIALOG
+#define DEBUG_SLAVESELECTION
+#define DEBUG_SOCKET
+#define DEBUG_SOCKET_SIGNALS
+#define DEBUG_STATS
+#define DEBUG_TIMER
+#define DEBUG_TREE
+#define DEBUG_UPDATE
+#define DEBUG_USERS
+#define DEBUG_VFS
+#define DEBUG_SECTIONS
+#define DEBUG_SKINS
 
-	mirror_side source;
-	mirror_side target;
-} mirror_ctx;
+#if defined(DEBUG_TO_CONSOLE) && !defined(DEBUG_DISABLE)
+# define _DEBUG_CONSOLE(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg);
+#else
+# define _DEBUG_CONSOLE(format, arg...) 
+#endif
 
+#if defined(DEBUG_TO_FILE) && !defined(DEBUG_DISABLE)
+# include "logging.h"
+# define _DEBUG_FILE(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg);
+#else
+# define _DEBUG_FILE(format, arg...) 
+#endif
 
-typedef void* mirror_param;
-
-module mirrors {
-	extern _collection *mirrors @ all;
-
-	mirror_ctx *mirror_lua_new @ start(
-		slave_connection *src_cnx,
-		vfs_element *src_file,
-		slave_connection *dest_cnx,
-		vfs_element *dest_file,
-		char *func_name,
-		unsigned int param
-	);
-	
-	unsigned int mirror_cancel @ cancel(mirror_ctx *mirror);
-}
-
+#endif /* __DEBUG_H */

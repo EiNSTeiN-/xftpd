@@ -37,22 +37,27 @@
 #define __SITE_H
 
 #include "constants.h"
+#include "collection.h"
+#include "ftpd.h"
+#include "scripts.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SITE
-#endif
-
-#ifdef DEBUG_SITE
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SITE_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SITE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_SITE)
+# define SITE_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SITE_DBG(format, arg...)
+# define SITE_DBG(format, arg...)
 #endif
 
 extern struct collection *site_hooks;
+
+struct site_handler {
+	struct obj o;
+	struct collectible c;
+	
+	struct script_ctx *script;
+	
+	int handler_index;
+} __attribute__((packed));
 
 int site_init();
 void site_free();
@@ -60,7 +65,8 @@ void site_free();
 int site_reload();
 
 unsigned int site_handle(struct ftpd_client_ctx *client, char *line);
-unsigned int site_tree_add(struct collection *branches, char *trigger, char *handler);
+//unsigned int site_tree_add(struct collection *branches, char *trigger, char *handler);
+int site_tree_add(lua_State *L);
 
 #endif /* __SITE_H */
 

@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 
 #include "constants.h"
 #include "collection.h"
@@ -56,15 +59,11 @@
 struct collection *mirrors = NULL;
 
 int mirror_init() {
-
-#ifdef NO_MIRRORS
-	MIRROR_DBG("Compiled without mirrors");
-#else
+	
 	MIRROR_DBG("Loading ...");
 
 	mirrors = collection_new(C_CASCADE);
-#endif
-
+	
 	return 1;
 }
 
@@ -81,7 +80,6 @@ void mirror_free() {
 	return;
 }
 
-#ifndef NO_MIRRORS
 /* p is NULL on timeout and on read error */
 static unsigned int mirror_slave_transfer_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 	struct mirror_ctx *mirror = (struct mirror_ctx *)cmd->param;
@@ -89,7 +87,7 @@ static unsigned int mirror_slave_transfer_query_callback(struct slave_connection
 	struct mirror_side *side;
 	unsigned int source; /* 1 if this callback is from the source */
 
-	MIRROR_DBG("%I64u: Mirror transfer response received", cmd->uid);
+	MIRROR_DBG("" LLU ": Mirror transfer response received", cmd->uid);
 
 	if(mirror->source.cnx == cnx) {
 		side = &mirror->source;
@@ -107,7 +105,7 @@ static unsigned int mirror_slave_transfer_query_callback(struct slave_connection
 	side->cmd = NULL;
 
 	if(!p || (p->type == IO_FAILURE)) {
-		MIRROR_DBG("%I64u: Mirror failed", cmd->uid);
+		MIRROR_DBG("" LLU ": Mirror failed", cmd->uid);
 		mirror_cancel(mirror);
 		return 1;
 	}
@@ -131,7 +129,7 @@ static unsigned int mirror_slave_transfer_query_callback(struct slave_connection
 		
 			/* if the file was .sfv then request its infos */
 			if((strlen(side->file->name) > 4) &&
-				!stricmp(&side->file->name[strlen(side->file->name)-4], ".sfv")) {
+				!strcasecmp(&side->file->name[strlen(side->file->name)-4], ".sfv")) {
 				if(!make_sfv_query(side->cnx, side->file)) {
 					MIRROR_DBG("Could not make sfv query for %s", side->file->name);
 				}
@@ -175,7 +173,7 @@ static unsigned int mirror_slave_listen_query_callback(struct slave_connection *
 	struct mirror_side *side;
 	unsigned int source; /* 1 if this callback is from the source */
 
-	MIRROR_DBG("%I64u: Mirror listen response received", cmd->uid);
+	MIRROR_DBG("" LLU ": Mirror listen response received", cmd->uid);
 
 	if(mirror->source.cnx == cnx) {
 		side = &mirror->source;
@@ -192,7 +190,7 @@ static unsigned int mirror_slave_listen_query_callback(struct slave_connection *
 	side->cmd = NULL;
 
 	if(!p || p->type == IO_FAILURE) {
-		MIRROR_DBG("%I64u: Mirror failed", cmd->uid);
+		MIRROR_DBG("" LLU ": Mirror failed", cmd->uid);
 		mirror_cancel(mirror);
 		return 1;
 	}
@@ -220,7 +218,7 @@ static unsigned int mirror_slave_listen_query_callback(struct slave_connection *
 		mirror->source.cmd = asynch_new(
 			mirror->source.cnx,
 			IO_SLAVE_TRANSFER,
-			INFINITE,			/* transfer queries does not timeout because they come back only when the transfer success or fail */
+			-1,			/* transfer queries does not timeout because they come back only when the transfer succeed or fail */
 			(void*)data,
 			length,
 			mirror_slave_transfer_query_callback,
@@ -243,7 +241,7 @@ static unsigned int mirror_slave_listen_query_callback(struct slave_connection *
 		mirror->target.cmd = asynch_new(
 			mirror->target.cnx,
 			IO_SLAVE_TRANSFER,
-			INFINITE,
+			-1,
 			(void*)data,
 			length,
 			mirror_slave_transfer_query_callback,
@@ -277,7 +275,7 @@ static unsigned int mirror_make_slave_listen_query(struct mirror_ctx *mirror) {
 	side->cmd = asynch_new(side->cnx, IO_SLAVE_LISTEN, MASTER_ASYNCH_TIMEOUT, (void*)&data, sizeof(data), mirror_slave_listen_query_callback, mirror);
 	if(!side->cmd) return 0;
 
-	MIRROR_DBG("%I64u: Mirror listen query built", side->cmd->uid);
+	MIRROR_DBG("" LLU ": Mirror listen query built", side->cmd->uid);
 
 	return 1;
 }
@@ -312,7 +310,7 @@ static void mirror_obj_destroy(struct mirror_ctx *mirror) {
 	}
 
 	if(mirror->volatile_config) {
-		config_destroy(mirror->volatile_config);
+		config_close(mirror->volatile_config);
 		mirror->volatile_config = NULL;
 	}
 
@@ -356,7 +354,6 @@ static void mirror_obj_destroy(struct mirror_ctx *mirror) {
 
 	return;
 }
-#endif
 
 /*
 	Mirror the content of one file from one
@@ -372,10 +369,6 @@ struct mirror_ctx *mirror_new(
 	int (*callback)(struct mirror_ctx *mirror, int success, void *param),
 	void *param
 ) {
-#ifdef NO_MIRRORS
-	MIRROR_DBG("Compiled without mirrors");
-	return NULL;
-#else
 	struct mirror_ctx *mirror;
 	struct {
 		struct slave_connection *cnx;
@@ -510,7 +503,7 @@ struct mirror_ctx *mirror_new(
 		return NULL;
 	}
 
-	mirror->volatile_config = config_new(NULL, 0);
+	mirror->volatile_config = config_volatile();
 	if(!mirror->volatile_config) {
 		MIRROR_DBG("Memory error");
 		collection_delete(dest_cnx->mirror_to, mirror);
@@ -530,7 +523,7 @@ struct mirror_ctx *mirror_new(
 	*/
 	if(!mirror_make_slave_listen_query(mirror)) {
 		MIRROR_DBG("Could not make \"slave listen\" query.");
-		config_destroy(mirror->volatile_config);
+		config_close(mirror->volatile_config);
 		collection_delete(mirrors, mirror);
 		collection_delete(dest_cnx->mirror_to, mirror);
 		collection_delete(src_cnx->mirror_from, mirror);
@@ -541,7 +534,6 @@ struct mirror_ctx *mirror_new(
 	}
 
 	return mirror;
-#endif
 }
 
 unsigned int mirror_cancel(struct mirror_ctx *mirror) {
@@ -553,136 +545,5 @@ unsigned int mirror_cancel(struct mirror_ctx *mirror) {
 	obj_destroy(&mirror->o);
 	
 	return 1;
-}
-
-#ifndef NO_MIRRORS
-static int mirror_lua_callback(struct mirror_ctx *mirror, int success, void *param) {
-	struct mirror_lua_ctx *lua_ctx = param;
-	lua_Number n;
-	unsigned int err;
-	char *errval, *errmsg;
-	int stacktop = lua_gettop(L);
-
-	lua_pushstring(L, lua_ctx->func_name);
-	lua_gettable(L, LUA_GLOBALSINDEX);
-
-	/* make sure the function has been found */
-	if(!lua_isfunction(L, -1)) {
-		MIRROR_DBG("%s is not a function", lua_ctx->func_name);
-		lua_pop(L, 1);
-		free(lua_ctx->func_name);
-		free(lua_ctx);
-		if(stacktop != lua_gettop(L)) {
-			MIRROR_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-		}
-		return 1;
-	}
-
-	/* push the parameters */
-	// mirror
-	tolua_pushusertype(L, mirror, "mirror_ctx");
-	// success
-	lua_pushboolean(L, success);
-	// param
-	tolua_pushnumber(L, lua_ctx->param);
-
-	err = lua_pcall(L, 3 /* param count */, 1, 0);
-	if(err) {
-		/*
-		LUA_ERRRUN --- a runtime error. 
-		LUA_ERRMEM --- memory allocation error. For such errors, Lua does not call the error handler function. 
-		LUA_ERRERR --- error while running the error handler function. 
-		*/
-		if(err == LUA_ERRRUN) errval = "runtime error";
-		else if(err == LUA_ERRMEM) errval = "memory allocation error";
-		else if(err == LUA_ERRERR) errval = "error while running the error handler function";
-		else errval = "unknown error";
-
-		errmsg = (char*)lua_tostring(L, -1);
-
-		MIRROR_DBG("error catched:");
-		MIRROR_DBG("  --> function: %s", lua_ctx->func_name);
-		MIRROR_DBG("  --> error value: %s", errval);
-		MIRROR_DBG("  --> error message: %s", errmsg);
-	} else {
-
-		/* make sure the return value is a number */
-		if(!lua_isnumber(L, -1)) {
-			MIRROR_DBG("[%s] returned non-number type, dropping.", lua_ctx->func_name);
-			lua_pop(L, 1);
-			free(lua_ctx->func_name);
-			free(lua_ctx);
-			if(stacktop != lua_gettop(L)) {
-				MIRROR_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-			}
-			return 1;
-		}
-
-		n = lua_tonumber(L, -1);
-
-		if(!(int)n) {
-			lua_pop(L, 1); /* pops the return value */
-			free(lua_ctx->func_name);
-			free(lua_ctx);
-			if(stacktop != lua_gettop(L)) {
-				MIRROR_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-			}
-			return 0;
-		}
-	}
-	lua_pop(L, 1); /* pops the return value */
-
-	free(lua_ctx->func_name);
-	free(lua_ctx);
-
-	if(stacktop != lua_gettop(L)) {
-		MIRROR_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-	}
-
-	return 1;
-}
-#endif
-
-struct mirror_ctx *mirror_lua_new(
-	struct slave_connection *src_cnx,
-	struct vfs_element *src_file,
-	struct slave_connection *dest_cnx,
-	struct vfs_element *dest_file,
-	char *func_name,
-	unsigned int param
-) {
-#ifdef NO_MIRRORS
-	MIRROR_DBG("Compiled without mirrors");
-	return NULL;
-#else
-	struct mirror_ctx *mirror;
-	struct mirror_lua_ctx *lua_ctx;
-
-	lua_ctx = malloc(sizeof(struct mirror_lua_ctx));
-	if(!lua_ctx) {
-		MIRROR_DBG("Memory error");
-		return NULL;
-	}
-
-	/* set all infos in the lua ctx */
-	lua_ctx->func_name = strdup(func_name);
-	if(!lua_ctx->func_name) {
-		MIRROR_DBG("Memory error");
-		free(lua_ctx);
-		return NULL;
-	}
-	lua_ctx->param = param;
-
-	/* now create the mirror operation */
-	mirror = mirror_new(src_cnx, src_file, dest_cnx, dest_file, mirror_lua_callback, lua_ctx);
-	if(!mirror) {
-		MIRROR_DBG("Memory error");
-		free(lua_ctx->func_name);
-		free(lua_ctx);
-		return NULL;
-	}
-
-	return mirror;
-#endif
 }
 

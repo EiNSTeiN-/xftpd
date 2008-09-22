@@ -38,17 +38,14 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_BASE64
-#endif
-
-#ifdef DEBUG_BASE64
-#  define BASE64_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+#include "debug.h"
+#if defined(DEBUG_BASE64)
+# define BASE64_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define BASE64_DBG(format, arg...)
+# define BASE64_DBG(format, arg...)
 #endif
 
-char *b64_encode(char *buf, int len);
-char *b64_decode(char *buf, int *elen);
+char *b64_encode(unsigned char *buf, int len);
+unsigned char *b64_decode(char *buf, int *elen);
 
 #endif

@@ -36,6 +36,7 @@
 #ifndef __SERVICE_H
 #define __SERVICE_H
 
+#ifdef WIN32
 #include <windows.h>
 
 void __stdcall service_handler(unsigned long control_code);
@@ -46,5 +47,6 @@ unsigned int service_start_and_call(char *service_name, char* service_disp, char
 
 extern SERVICE_STATUS_HANDLE	service_status_handle;
 extern SERVICE_STATUS			service_status;
+#endif /* WIN32 */
 
 #endif /* __SERVICE_H */

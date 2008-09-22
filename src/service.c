@@ -33,6 +33,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
 
 #include "service.h"
@@ -204,3 +205,5 @@ unsigned int service_start_and_call(char *service_name, char* service_disp, char
 
 	return 0;
 }
+
+#endif /* WIN32 */

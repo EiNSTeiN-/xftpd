@@ -33,29 +33,40 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "sfv.h"
+$#include "users.h"
 
 typedef struct {
-	collectible c @ collectible;
+	tolua_readonly collectible c @ collectible;
+
+	tolua_readonly config_file *config;
+
+	tolua_readonly char *username;
+	tolua_readonly char *usergroup;
+
+	tolua_readonly bool disabled; /* 1 if the user is disabled */
+
+	tolua_readonly collection *clients;
+} user_ctx;
+
+module users {
+	extern collection *users @ all;
+
+	user_ctx *user_new @ add(char *username, char *usergroup, char *password);
+	user_ctx *user_get @ get(char *username);
+
+	bool user_auth @ auth(user_ctx *user, char *password);
+	bool user_disable @ disable(user_ctx *user, bool disabled);
+	bool user_delete @ delete(user_ctx *user);
 	
-	unsigned int crc @ checksum;
-	const char filename[1];
-} sfv_entry;
-
-typedef struct {
-	collectible c @ collectible;
-	
-	_collection *entries; /* collection of sfv_entry structures */
-	vfs_element *element;
-} sfv_ctx;
-
-module sfv {
-	unsigned int make_sfv_query @ query(slave_connection *cnx, vfs_element *file);
-	sfv_entry *sfv_add_entry @ add(sfv_ctx *sfv, char *filename, unsigned int crc);
-	sfv_entry *sfv_get_entry @ get(sfv_ctx *sfv, char *filename);
-	void sfv_delete @ clean(sfv_ctx *sfv);
-
-	//sfv_entry *collection_next @ iterate(_collection *c, unsigned int *iterator);
+	bool user_set_group @ chgroup(user_ctx *user, char *group);
+	bool user_set_password @ chpass(user_ctx *user, char *password);
 }
 
-
+struct user_ctx {
+	tolua_outside bool user_auth @ auth(char *password);
+	tolua_outside bool user_disable @ disable(bool disabled);
+	tolua_outside bool user_delete @ delete();
+	
+	tolua_outside bool user_set_group @ chgroup(char *group);
+	tolua_outside bool user_set_password @ chpass(char *password);
+};

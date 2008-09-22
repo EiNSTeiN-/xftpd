@@ -38,19 +38,11 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_CRYPTO
-#endif
-
-#ifdef DEBUG_CRYPTO
-# include "logging.h"
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define CRYPTO_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define CRYPTO_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_CRYPTO)
+# define CRYPTO_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define CRYPTO_DBG(format, arg...)
+# define CRYPTO_DBG(format, arg...)
 #endif
 
 #include <openssl/rsa.h>
@@ -65,21 +57,21 @@ struct keypair {
 	unsigned int priv_present;
 } __attribute__((packed));
 
-unsigned int crypto_rand(char *buffer, unsigned int size);
+unsigned int crypto_rand(unsigned char *buffer, unsigned int size);
 char *crypto_keyhash(struct keypair *k);
 unsigned int crypto_initialize_keypair(struct keypair *k, unsigned int priv_present);
 unsigned int crypto_generate_keypair(struct keypair *k, unsigned int bits);
-char *crypto_export_keypair(struct keypair *k, unsigned int export_priv, unsigned int *export_length);
-unsigned int crypto_import_keypair(struct keypair *k, unsigned int import_priv, char *data, unsigned int data_length);
-char *crypto_sha1_sign_data(struct keypair *k, char *data, unsigned int data_length, unsigned int *sign_length);
-unsigned int crypto_sha1_verify_sign(struct keypair *k, char *data, unsigned int data_length, char *sign, unsigned int sign_length);
+unsigned char *crypto_export_keypair(struct keypair *k, unsigned int export_priv, unsigned int *export_length);
+unsigned int crypto_import_keypair(struct keypair *k, unsigned int import_priv, unsigned char *data, unsigned int data_length);
+unsigned char *crypto_sha1_sign_data(struct keypair *k, unsigned char *data, unsigned int data_length, unsigned int *sign_length);
+unsigned int crypto_sha1_verify_sign(struct keypair *k, unsigned char *data, unsigned int data_length, unsigned char *sign, unsigned int sign_length);
 unsigned int crypto_destroy_keypair(struct keypair *k);
 
 
 unsigned int crypto_max_public_encryption_length(struct keypair *k);
-char *crypto_public_encrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *encrypted_size);
-char *crypto_private_decrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *decrypted_size);
-unsigned int crypto_set_cipher_key(BF_KEY *schedule, char *buffer, unsigned int length);
-char *crypto_cipher_encrypt(BF_KEY *schedule, void *data, unsigned int data_length, unsigned int *retsize, int enc);
+unsigned char *crypto_public_encrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *encrypted_size);
+unsigned char *crypto_private_decrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *decrypted_size);
+unsigned int crypto_set_cipher_key(BF_KEY *schedule, unsigned char *buffer, unsigned int length);
+unsigned char *crypto_cipher_encrypt(BF_KEY *schedule, void *data, unsigned int data_length, unsigned int *retsize, int enc);
 
 #endif /* __CRYPTO_H */

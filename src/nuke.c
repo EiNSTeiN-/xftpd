@@ -33,7 +33,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
 
 #include "constants.h"
 #include "nuke.h"
@@ -42,6 +44,7 @@
 #include "config.h"
 #include "time.h"
 #include "logging.h"
+#include "main.h"
 
 struct collection *nukes = NULL; /* nuke_ctx */
 
@@ -301,7 +304,7 @@ void nuke_del(struct nuke_ctx *nuke) {
 
 static int nuke_get_matcher(struct collection *c, struct nuke_ctx *nuke, char *path) {
 
-	return !stricmp(nuke->path, path);
+	return !strcasecmp(nuke->path, path);
 }
 
 /* lookup a nuke from its (normalized) path */
@@ -320,7 +323,7 @@ static int nuke_check_matcher(struct collection *c, struct nuke_ctx *nuke, char 
 	if(nuke->element)
 		return 0;
 
-	if(!stricmp(nuke->path, path)) {
+	if(!strcasecmp(nuke->path, path)) {
 		return 1;
 	}
 
@@ -383,7 +386,7 @@ int nuke_check_all() {
 
 int nukee_get_matcher(struct collection *c, struct nuke_nukee *nukee, char *name) {
 
-	return !stricmp(nukee->name, name);
+	return !strcasecmp(nukee->name, name);
 }
 
 /* return the nukee structure from the nuke context matching the given name */
@@ -481,7 +484,7 @@ int nuke_load_all() {
 		if(!ptr || !(*_path)) continue;
 		*ptr = 0; ptr++;
 		
-		if(!stricmp(what, "nuke")) {
+		if(!strcasecmp(what, "nuke")) {
 			
 			_multiplier = ptr;
 			ptr = strchr(ptr, ';');
@@ -506,7 +509,7 @@ int nuke_load_all() {
 				continue;
 			}
 			
-		} else if(!stricmp(what, "nukee")) {
+		} else if(!strcasecmp(what, "nukee")) {
 			
 			_name = ptr;
 			ptr = strchr(ptr, ';');

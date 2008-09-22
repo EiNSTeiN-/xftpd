@@ -33,7 +33,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
 
 #include "asynch.h"
 #include "slaves.h"
@@ -151,7 +153,7 @@ unsigned int asynch_match(struct slave_connection *cnx, struct packet *p) {
 
 	if(!cmd) {
 		/* This is not critical, we stay connected when it happens */
-		SLAVES_DBG("Received a query that could not be matched: %I64u / type: %u / length: %u", p->uid, p->type, p->size);
+		SLAVES_DBG("Received a query that could not be matched: " LLU " / type: %u / length: %u", p->uid, p->type, p->size);
 		return 1;
 	}
 

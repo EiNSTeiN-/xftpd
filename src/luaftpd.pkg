@@ -1,0 +1,97 @@
+/*
+ * Copyright (c) 2007, The xFTPd Project.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *
+ *     * Neither the name of the xFTPd Project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ *     * Redistributions of this project or parts of this project in any form
+ *       must retain the following aknowledgment:
+ *       "This product includes software developed by the xFTPd Project.
+ *        http://www.xftpd.com/ - http://www.xftpd.org/"
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE xFTPd PROJECT ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE xFTPd PROJECT BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+$#include "ftpd.h"
+$#include "main.h"
+
+typedef struct {
+	tolua_readonly unsigned long long int timestamp; /* start time */
+	tolua_readonly bool upload; /* 0 for download */
+
+	tolua_readonly unsigned long long int xfered @ size;
+
+	/* reference to the vfs element we are operating on */
+	tolua_readonly vfs_element *element @ file;
+	tolua_readonly unsigned int checksum; /* checksum of the transfer. this is valid once
+							the transfer is complete for both upload & download */
+
+	/* reference the slave we are using for transfer */
+	tolua_readonly slave_connection *cnx;
+} client_xfer;
+
+typedef struct {
+	tolua_readonly collectible c @ collectible;
+	
+	tolua_readonly unsigned long long int timestamp;
+	
+	tolua_readonly config_file *volatile_config @ userdata;
+
+	tolua_readonly bool logged;		/* true if the user is authenticated */
+	tolua_readonly char username[32];			/* username used to authenticate */
+
+	tolua_readonly user_ctx *user; /* associated user structure, NULL when the client is not logged */
+
+	tolua_readonly vfs_element *working_directory;/* directory currently browsed by the user */
+} ftpd_client;
+
+module ftpd {
+	void main_reload @ reload();
+}
+
+module clients {
+	collection *clients @ all;
+	
+	client_xfer *ftpd_lua_client_to_xfer @ get_xfer(ftpd_client *ctx);
+	ipaddress client_ipaddress @ address(ftpd_client *ctx);
+	
+	void ftpd_client_destroy @ kick(ftpd_client *ctx);
+	
+	bool ftpd_lua_message @ msg(ftpd_client *ctx, const char *msg);
+	
+	/* "flash" a directory to the client, i.e. add a directory to the listing which is not really there */
+	bool ftpd_inject_listing @ flash(ftpd_client *ctx, unsigned int type, const char *name, const char *owner = "xFTPd");
+}
+
+struct ftpd_client {
+	tolua_outside client_xfer *ftpd_lua_client_to_xfer @ get_xfer();
+	tolua_outside ipaddress client_ipaddress @ address();
+	
+	tolua_outside void ftpd_client_destroy @ kick();
+	
+	tolua_outside bool ftpd_lua_message @ msg(const char *msg);
+	
+	/* "flash" a directory to the client, i.e. add a directory to the listing which is not in the vfs */
+	tolua_outside bool ftpd_inject_listing @ flash(unsigned int type, const char *name, const char *owner = "xFTPd");
+};

@@ -38,18 +38,11 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_MAIN
-#endif
-
-#ifdef DEBUG_MAIN
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define MAIN_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define MAIN_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_MAIN)
+# define MAIN_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define MAIN_DBG(format, arg...)
+# define MAIN_DBG(format, arg...)
 #endif
 
 #include "ftpd.h"
@@ -65,7 +58,7 @@ struct main_ctx {
 
 extern struct main_ctx main_ctx;
 
-extern unsigned long long int main_cycle_time;
+//extern unsigned long long int main_cycle_time;
 
 void main_fatal();
 void main_reload();

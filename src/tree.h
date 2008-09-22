@@ -40,18 +40,11 @@
 #include "obj.h"
 #include "collection.h"
 
-#ifndef NO_FTPD_DEBUG
-//#  define DEBUG_TREE
-#endif
-
-#ifdef DEBUG_TREE
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define TREE_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define TREE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_TREE)
+# define TREE_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define TREE_DBG(format, arg...)
+# define TREE_DBG(format, arg...)
 #endif
 
 struct branch {
@@ -70,8 +63,8 @@ struct branch {
 
 typedef int (*tree_f)(void *a, void *b);
 
-unsigned int tree_add(struct collection *branches, char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b));
-struct collection *tree_get(struct collection *branches, char *trigger, char **args);
+unsigned int tree_add(struct collection *branches, const char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b));
+struct collection *tree_get(struct collection *branches, const char *trigger, char **args);
 unsigned int tree_destroy(struct collection *branches);
 
 #endif /* __TREE_H */

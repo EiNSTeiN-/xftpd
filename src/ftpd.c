@@ -43,9 +43,13 @@
     rfc-2389 compliant (in progress)
 		English: http://www.wu-ftpd.org/rfc/rfc2389.html
 */
+
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
-#include <poll.h>
+//#include <poll.h>
 
 #include "constants.h"
 #include "asprintf.h"
@@ -64,7 +68,6 @@
 #include "sfv.h"
 #include "stats.h"
 #include "slaveselection.h"
-#include "timeout.h"
 #include "signal.h"
 #include "main.h"
 #include "site.h"
@@ -111,58 +114,58 @@ static int ftpd_secure_no_drop = 0; /* if 1, CCC cannot be used to drop a secure
 static ftpd_command ftpd_client_text_to_command(char *buffer, unsigned int len) {
 
 	if(len < 3) return CMD_UNKNOWN;
-	if(!strnicmp(buffer, "PWD", 3)) return CMD_PRINT_WORKING_DIRECTORY;
-	if(!strnicmp(buffer, "CCC", 3)) return CMD_CLEAR_COMMAND_CHANNEL;
+	if(!strncasecmp(buffer, "PWD", 3)) return CMD_PRINT_WORKING_DIRECTORY;
+	if(!strncasecmp(buffer, "CCC", 3)) return CMD_CLEAR_COMMAND_CHANNEL;
 
 	if(len < 4) return CMD_UNKNOWN;
-	if(!strnicmp(buffer, "QUIT", 4)) return CMD_QUIT;
-	if(!strnicmp(buffer, "SYST", 4)) return CMD_SYSTEM;
-	if(!strnicmp(buffer, "FEAT", 4)) return CMD_FEATURES;
-	if(!strnicmp(buffer, "CWD ", 4)) return CMD_CHANGE_WORKING_DIRECTORY;
-	if(!strnicmp(buffer, "CDUP", 4)) return CMD_CHANGE_TO_PARENT_DIRECTORY;
-	if(!strnicmp(buffer, "REIN", 4)) return CMD_REINITIALIZE;
-	if(!strnicmp(buffer, "PASV", 4)) return CMD_PASSIVE;
-	if(!strnicmp(buffer, "ABOR", 4)) return CMD_ABORT;
-	if(!strnicmp(buffer, "RMD ", 4)) return CMD_REMOVE_DIRECTORY;
-	if(!strnicmp(buffer, "MKD ", 4)) return CMD_MAKE_DIRECTORY;
-	if(!strnicmp(buffer, "LIST", 4)) return CMD_LIST;
-	if(!strnicmp(buffer, "NLST", 4)) return CMD_NAME_LIST;
-	if(!strnicmp(buffer, "STAT", 4)) return CMD_STATUS;
-	if(!strnicmp(buffer, "HELP", 4)) return CMD_HELP;
-	if(!strnicmp(buffer, "NOOP", 4)) return CMD_NO_OPERATION;
-	if(!strnicmp(buffer, "STOU", 4)) return CMD_STORE_UNIQUE;
-	if(!strnicmp(buffer, "SSCN", 4)) return CMD_SET_SECURE_CLIENT_NEGOTIATION;
+	if(!strncasecmp(buffer, "QUIT", 4)) return CMD_QUIT;
+	if(!strncasecmp(buffer, "SYST", 4)) return CMD_SYSTEM;
+	if(!strncasecmp(buffer, "FEAT", 4)) return CMD_FEATURES;
+	if(!strncasecmp(buffer, "CWD ", 4)) return CMD_CHANGE_WORKING_DIRECTORY;
+	if(!strncasecmp(buffer, "CDUP", 4)) return CMD_CHANGE_TO_PARENT_DIRECTORY;
+	if(!strncasecmp(buffer, "REIN", 4)) return CMD_REINITIALIZE;
+	if(!strncasecmp(buffer, "PASV", 4)) return CMD_PASSIVE;
+	if(!strncasecmp(buffer, "ABOR", 4)) return CMD_ABORT;
+	if(!strncasecmp(buffer, "RMD ", 4)) return CMD_REMOVE_DIRECTORY;
+	if(!strncasecmp(buffer, "MKD ", 4)) return CMD_MAKE_DIRECTORY;
+	if(!strncasecmp(buffer, "LIST", 4)) return CMD_LIST;
+	if(!strncasecmp(buffer, "NLST", 4)) return CMD_NAME_LIST;
+	if(!strncasecmp(buffer, "STAT", 4)) return CMD_STATUS;
+	if(!strncasecmp(buffer, "HELP", 4)) return CMD_HELP;
+	if(!strncasecmp(buffer, "NOOP", 4)) return CMD_NO_OPERATION;
+	if(!strncasecmp(buffer, "STOU", 4)) return CMD_STORE_UNIQUE;
+	if(!strncasecmp(buffer, "SSCN", 4)) return CMD_SET_SECURE_CLIENT_NEGOTIATION;
 
 	if(len < 5) return CMD_UNKNOWN;
-	if(!strnicmp(buffer, "USER ", 5)) return CMD_USERNAME;
-	if(!strnicmp(buffer, "PASS ", 5)) return CMD_PASSWORD;
-	if(!strnicmp(buffer, "CLNT ", 5)) return CMD_CLIENT;
-	if(!strnicmp(buffer, "ACCT ", 5)) return CMD_ACCOUNT;
-	if(!strnicmp(buffer, "SMNT ", 5)) return CMD_STRUCTURE_MOUNT;
-	if(!strnicmp(buffer, "ALLO ", 5)) return CMD_ALLOCATE;
-	if(!strnicmp(buffer, "PORT ", 5)) return CMD_DATA_PORT;
-	if(!strnicmp(buffer, "TYPE ", 5)) return CMD_REPRESENTATION_TYPE;
-	if(!strnicmp(buffer, "STRU ", 5)) return CMD_FILE_STRUCTURE;
-	if(!strnicmp(buffer, "MODE ", 5)) return CMD_TRANSFER_MODE;
-	if(!strnicmp(buffer, "RETR ", 5)) return CMD_RETRIEVE;
-	if(!strnicmp(buffer, "STOR ", 5)) return CMD_STORE;
-	if(!strnicmp(buffer, "APPE ", 5)) return CMD_APPEND;
-	if(!strnicmp(buffer, "REST ", 5)) return CMD_RESTART;
-	if(!strnicmp(buffer, "RNFR ", 5)) return CMD_RENAME_FROM;
-	if(!strnicmp(buffer, "RNTO ", 5)) return CMD_RENAME_TO;
-	if(!strnicmp(buffer, "DELE ", 5)) return CMD_DELETE;
-	if(!strnicmp(buffer, "SITE ", 5)) return CMD_SITE;
-	if(!strnicmp(buffer, "SIZE ", 5)) return CMD_SIZE_OF_FILE;
-	if(!strnicmp(buffer, "PRET ", 5)) return CMD_PRE_TRANSFER;
-	if(!strnicmp(buffer, "PROT ", 5)) return CMD_PROTECTION;
-	if(!strnicmp(buffer, "PBSZ ", 5)) return CMD_PROTECTION_BUFFER_SIZE;
-	if(!strnicmp(buffer, "AUTH ", 5)) return CMD_AUTHENTICATE;
+	if(!strncasecmp(buffer, "USER ", 5)) return CMD_USERNAME;
+	if(!strncasecmp(buffer, "PASS ", 5)) return CMD_PASSWORD;
+	if(!strncasecmp(buffer, "CLNT ", 5)) return CMD_CLIENT;
+	if(!strncasecmp(buffer, "ACCT ", 5)) return CMD_ACCOUNT;
+	if(!strncasecmp(buffer, "SMNT ", 5)) return CMD_STRUCTURE_MOUNT;
+	if(!strncasecmp(buffer, "ALLO ", 5)) return CMD_ALLOCATE;
+	if(!strncasecmp(buffer, "PORT ", 5)) return CMD_DATA_PORT;
+	if(!strncasecmp(buffer, "TYPE ", 5)) return CMD_REPRESENTATION_TYPE;
+	if(!strncasecmp(buffer, "STRU ", 5)) return CMD_FILE_STRUCTURE;
+	if(!strncasecmp(buffer, "MODE ", 5)) return CMD_TRANSFER_MODE;
+	if(!strncasecmp(buffer, "RETR ", 5)) return CMD_RETRIEVE;
+	if(!strncasecmp(buffer, "STOR ", 5)) return CMD_STORE;
+	if(!strncasecmp(buffer, "APPE ", 5)) return CMD_APPEND;
+	if(!strncasecmp(buffer, "REST ", 5)) return CMD_RESTART;
+	if(!strncasecmp(buffer, "RNFR ", 5)) return CMD_RENAME_FROM;
+	if(!strncasecmp(buffer, "RNTO ", 5)) return CMD_RENAME_TO;
+	if(!strncasecmp(buffer, "DELE ", 5)) return CMD_DELETE;
+	if(!strncasecmp(buffer, "SITE ", 5)) return CMD_SITE;
+	if(!strncasecmp(buffer, "SIZE ", 5)) return CMD_SIZE_OF_FILE;
+	if(!strncasecmp(buffer, "PRET ", 5)) return CMD_PRE_TRANSFER;
+	if(!strncasecmp(buffer, "PROT ", 5)) return CMD_PROTECTION;
+	if(!strncasecmp(buffer, "PBSZ ", 5)) return CMD_PROTECTION_BUFFER_SIZE;
+	if(!strncasecmp(buffer, "AUTH ", 5)) return CMD_AUTHENTICATE;
 
 	/*
 		Special case of "ABOR" that FlashFXP send. Looks like: ÿôÿòÿABOR
 		What a broken client.
 	*/
-	if((strlen(buffer) > 4) && !strnicmp(&buffer[strlen(buffer)-4], "ABOR", 4)) return CMD_BROKEN_ABORT;
+	if((strlen(buffer) > 4) && !strncasecmp(&buffer[strlen(buffer)-4], "ABOR", 4)) return CMD_BROKEN_ABORT;
 
 	return CMD_UNKNOWN;
 }
@@ -367,7 +370,7 @@ static unsigned int ftpd_client_parse_unlogged_input(struct ftpd_client_ctx *cli
 			return 1;
 		}
 		
-		if(!stricmp(Pointer, "0")) {
+		if(!strcasecmp(Pointer, "0")) {
 			ftpd_client_text_enqueue(client->messages,
 				"200 Protection Buffer Size set to 0\n"
 			);
@@ -552,7 +555,7 @@ static unsigned int ftpd_client_parse_unlogged_input(struct ftpd_client_ctx *cli
 			collection_add(client->user->clients, client);
 
 			if(!event_onClientLoginSuccess(client)) {
-				//printf("[client:%I64u] rejected by event_onClientLoginSuccess()");
+				//printf("[client:" LLU "] rejected by event_onClientLoginSuccess()");
 				ftpd_client_text_enqueue(client->messages, "530 Not logged in.");
 				return 0;
 			}
@@ -665,7 +668,7 @@ static unsigned int ftpd_client_make_directory_listing(struct collection *c, str
 
 		ftpd_client_text_enqueue(
 			client->data_ctx.data,
-			"%cwr-wr-wr- 1 %s %s %I64u %s %s -> %s\r\n",
+			"%cwr-wr-wr- 1 %s %s " LLU " %s %s -> %s\r\n",
 			type,
 			user ? user->username : (element->owner ? element->owner : "xFTPd"),
 			user ? user->usergroup : "xFTPd",
@@ -677,7 +680,7 @@ static unsigned int ftpd_client_make_directory_listing(struct collection *c, str
 	} else {
 		ftpd_client_text_enqueue(
 			client->data_ctx.data,
-			"%cwr-wr-wr- 1 %s %s %I64u %s %s\r\n",
+			"%cwr-wr-wr- 1 %s %s " LLU " %s %s\r\n",
 			type,
 			user ? user->username : (element->owner ? element->owner : "xFTPd"),
 			user ? user->usergroup : "xFTPd",
@@ -1007,7 +1010,7 @@ static unsigned int slave_listen_query_callback(struct slave_connection *cnx, st
 		return 1;
 	}
 
-	//printf("[slave:%I64u] Slave listen response received (q:%I64u)\n", cnx->uid, p->uid);
+	//printf("[slave:" LLU "] Slave listen response received (q:" LLU ")\n", cnx->uid, p->uid);
 
 	if(p->type == IO_FAILURE) {
 		/* general failure status: slave couldn't listen */
@@ -1073,7 +1076,7 @@ static unsigned int make_slave_listen_query(struct ftpd_client_ctx *client) {
 	struct slave_asynch_command *cmd;
 	struct slave_listen_request data;
 		
-	FTPD_DIALOG_DBG("%I64u: Querying the slave to listen", client->xfer.uid);
+	FTPD_DIALOG_DBG("" LLU ": Querying the slave to listen", client->xfer.uid);
 	data.xfer_uid = client->xfer.uid;
 
 	cmd = asynch_new(client->xfer.cnx, IO_SLAVE_LISTEN, MASTER_ASYNCH_TIMEOUT, (void*)&data, sizeof(data), slave_listen_query_callback, client);
@@ -1117,7 +1120,7 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 	client->xfer.cmd = NULL;
 
 	/* the client is waiting for an answer */
-	FTPD_DIALOG_DBG("%I64u: Transfer response received.", cmd->uid);
+	FTPD_DIALOG_DBG("" LLU ": Transfer response received.", cmd->uid);
 
 	if(!p) {
 		/* the slave couldn't answer/timeout occured */
@@ -1209,7 +1212,7 @@ static unsigned int slave_transfer_query_callback(struct slave_connection *cnx, 
 
 			/* if the file was .sfv then request its infos */
 			if((strlen(client->xfer.element->name) > 4) &&
-				!stricmp(&client->xfer.element->name[strlen(client->xfer.element->name)-4], ".sfv")) {
+				!strcasecmp(&client->xfer.element->name[strlen(client->xfer.element->name)-4], ".sfv")) {
 				if(!make_sfv_query(client->xfer.cnx, client->xfer.element)) {
 					FTPD_DBG("Could not make query for sfv file %s", client->xfer.element->name);
 				}
@@ -1300,7 +1303,7 @@ static unsigned int make_slave_transfer_query(struct ftpd_client_ctx *client) {
 	struct slave_asynch_command *cmd;
 	unsigned int length;
 	
-	FTPD_DIALOG_DBG("%I64u: Querying slave transfer", client->xfer.uid);
+	FTPD_DIALOG_DBG("" LLU ": Querying slave transfer", client->xfer.uid);
 
 	data = ftpd_transfer(client->xfer.uid, client->xfer.cnx->slave->vroot, client->xfer.element,
 		client->ip, client->port, client->passive, client->xfer.upload, client->xfer.restart, &length);
@@ -1310,7 +1313,7 @@ static unsigned int make_slave_transfer_query(struct ftpd_client_ctx *client) {
 		ftpd_secure_transfer(data, client->secure_server /* slave is the server-side for the ssl negotiation */);
 	}
 
-	cmd = asynch_new(client->xfer.cnx, IO_SLAVE_TRANSFER, INFINITE, (void*)data, length, slave_transfer_query_callback, client);
+	cmd = asynch_new(client->xfer.cnx, IO_SLAVE_TRANSFER, -1, (void*)data, length, slave_transfer_query_callback, client);
 	free(data);
 	if(!cmd) return 0;
 
@@ -1790,10 +1793,10 @@ static unsigned int ftpd_client_parse_logged_input(struct ftpd_client_ctx *clien
 		FTPD_DIALOG_DBG("[%08x] CMD_SET_SECURE_CLIENT_NEGOTIATION (%s)", (int)client, (Pointer ? Pointer : ""));
 		
 		if(Pointer) {
-			if(!stricmp(Pointer, "ON")) {
+			if(!strcasecmp(Pointer, "ON")) {
 				client->secure_server = 0;
 			}
-			else if(!stricmp(Pointer, "OFF")) {
+			else if(!strcasecmp(Pointer, "OFF")) {
 				client->secure_server = 1;
 			}
 		}
@@ -1815,7 +1818,7 @@ static unsigned int ftpd_client_parse_logged_input(struct ftpd_client_ctx *clien
 			return 1;
 		}
 		
-		if(!stricmp(Pointer, "0")) {
+		if(!strcasecmp(Pointer, "0")) {
 			ftpd_client_text_enqueue(client->messages,
 				"200 Protection Buffer Size set to 0\n"
 			);
@@ -2116,7 +2119,7 @@ __mode_success:
 			struct vfs_element *newdir, *container;
 
 			/* some dumb clients (ultrafxp ...) use "CWD ." as a kind of NOOP */
-			if(!stricmp(Pointer, ".")) {
+			if(!strcasecmp(Pointer, ".")) {
 
 				/* Change the current command to reflect what's really going on. */
 				*command = CMD_NO_OPERATION;
@@ -2413,7 +2416,7 @@ __mode_success:
 				break;
 			}
 
-			ftpd_client_text_enqueue(client->messages, "213 %I64u\n", element->size);
+			ftpd_client_text_enqueue(client->messages, "213 " LLU "\n", element->size);
 		}
 
 		break;
@@ -2461,18 +2464,18 @@ __mode_success:
 				container = client->working_directory; /* relative to current */
 
 			/* process the command, depending ... */
-			if(!strnicmp(Pointer, "LIST", 4) || !strnicmp(Pointer, "NLST", 4)) {
+			if(!strncasecmp(Pointer, "LIST", 4) || !strncasecmp(Pointer, "NLST", 4)) {
 				/* not needed but reply something gentle anyway */
 				ftpd_client_text_enqueue(client->messages,
 					"200 OK, next transfer will be from master.\n"
 				);
 				break;
-			} else if(!strnicmp(Pointer, "APPE", 4)) {
+			} else if(!strncasecmp(Pointer, "APPE", 4)) {
 				ftpd_client_text_enqueue(client->messages,
 					"550 Requested action not taken. APPE is not acceptable.\n"
 				);
 				break;
-			} else if(!strnicmp(Pointer, "RETR", 4)) {
+			} else if(!strncasecmp(Pointer, "RETR", 4)) {
 				/* file MUST EXIST and MUST BE AVAILABLE from ONE OR MORE slave */
 
 				/* skip the first param */
@@ -2501,7 +2504,7 @@ __mode_success:
 				);
 
 				//FTPD_DIALOG_DBG("[%08x] 4", (int)client);
-			} else if(!strnicmp(Pointer, "STOR", 4)) {
+			} else if(!strncasecmp(Pointer, "STOR", 4)) {
 				/* file must NOT EXIST and ONE OR MORE slave must be available  */
 
 				/* skip the first param */
@@ -3144,7 +3147,7 @@ __stor_error:
 			/* if the file is .sfv, then clean the parent's sfv structure */
 			/* this method does not handle the case where many sfv are in the same folder,
 				it will remove the whole sfv */
-			if((strlen(element->name) > 4) && !stricmp(&element->name[strlen(element->name)-4], ".sfv")) {
+			if((strlen(element->name) > 4) && !strcasecmp(&element->name[strlen(element->name)-4], ".sfv")) {
 				sfv_delete(element->parent->sfv);
 				element->parent->sfv = NULL;
 			}
@@ -3279,11 +3282,12 @@ static unsigned int ftpd_client_process_input(struct ftpd_client_ctx *client) {
 	return ret;
 }
 
-const char *client_address(struct ftpd_client_ctx *client) {
+ipaddress client_ipaddress(struct ftpd_client_ctx *client) {
 
-	if(!client) return "unknown";
+	if(!client)
+		return mkipaddress(-1,-1,-1,-1);
 
-	return socket_formated_peer_address(client->fd);
+	return socket_ipaddress(client->fd);
 }
 
 static void ftpd_client_obj_destroy(struct ftpd_client_ctx *client) {
@@ -3299,7 +3303,7 @@ static void ftpd_client_obj_destroy(struct ftpd_client_ctx *client) {
 	}
 
 	if(client->volatile_config) {
-		config_destroy(client->volatile_config);
+		config_close(client->volatile_config);
 		client->volatile_config = NULL;
 	}
 
@@ -3376,8 +3380,7 @@ void ftpd_client_destroy(struct ftpd_client_ctx *client) {
 }
 
 int ftpd_client_close(int fd, struct ftpd_client_ctx *client) {
-
-	FTPD_DIALOG_DBG("Client connection closed with %s", socket_formated_peer_address(fd));
+	FTPD_DIALOG_DBG("Client connection closed with %s", socket_ntoa(fd));
 
 	ftpd_client_destroy(client);
 
@@ -3430,7 +3433,7 @@ int ftpd_client_read_timeout(struct ftpd_client_ctx *client) {
 		ftpd_client_destroy(client);
 		return 0;
 	} else {
-		//FTPD_DBG("Client read timeout but only %I64u elapsed.", time);
+		//FTPD_DBG("Client read timeout but only " LLU " elapsed.", time);
 	}
 	
 	return 1;
@@ -3465,7 +3468,13 @@ int ftpd_client_read(int fd, struct ftpd_client_ctx *client) {
 				so we just return; */
 			break;
 		}
-		if((read == -1) && (WSAGetLastError() == WSAEWOULDBLOCK)) {
+		if((read == -1) && 
+#ifdef WIN32
+  (WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+  (errno == EWOULDBLOCK)
+#endif
+  ) {
 			/* no more data available? */
 			//FTPD_DBG("No more data available to be read from socket, %u filled.", client->filledsize);
 			break;
@@ -3492,8 +3501,8 @@ int ftpd_client_read(int fd, struct ftpd_client_ctx *client) {
 	ret = ftpd_client_process_input(client);
 
 	if(!ret) {
-		FTPD_DBG("Client disconnected because of what he sent at %s.", socket_formated_peer_address(fd));
-
+		FTPD_DBG("Client disconnected because of what he sent at %s.", socket_ntoa(fd));
+		
 		ftpd_client_destroy(client);
 		obj_unref(&client->o);
 		return 0;
@@ -3751,7 +3760,7 @@ int ftpd_client_write_timeout(struct ftpd_client_ctx *client) {
 		ftpd_client_destroy(client);
 		return 0;
 	} else {
-		//FTPD_DBG("Client write timeout but only %I64u elapsed.", time);
+		//FTPD_DBG("Client write timeout but only " LLU " elapsed.", time);
 	}
 	
 	return 1;
@@ -3881,7 +3890,7 @@ struct ftpd_client_ctx *ftpd_client_new(int fd) {
 	memset(client->iobuf, 0, client->buffersize);
 	client->filledsize = 0;
 
-	client->volatile_config = config_new(NULL, 0);
+	client->volatile_config = config_volatile();
 	if(!client->volatile_config) {
 		free(client->iobuf);
 		FTPD_DBG("Memory error");
@@ -4021,7 +4030,7 @@ int ftpd_connect(int fd, void *param) {
 	int client_fd;
 
 /*
-	FTPD_DBG("Stats [%I64u / %I64u:%u / %u / %u:%u] - Last Cycle [%I64u]",
+	FTPD_DBG("Stats [" LLU " / " LLU ":%u / %u / %u:%u] - Last Cycle [" LLU "]",
 		ftpd_connections,
 		socket_current,
 		socket_monitors ? collection_size(socket_monitors) : 0,
@@ -4056,7 +4065,7 @@ int ftpd_connect(int fd, void *param) {
 	socket_set_max_read(client_fd, FTPD_CLIENT_SOCKET_SIZE);
 	socket_set_max_write(client_fd, FTPD_CLIENT_SOCKET_SIZE);
 
-	FTPD_DIALOG_DBG("Ftpd client connected from %s", socket_formated_peer_address(client_fd));
+	FTPD_DIALOG_DBG("Ftpd client connected from %s", socket_ntoa(client_fd));
 
 	return 1;
 }
@@ -4130,7 +4139,8 @@ int ftpd_generate_certificate(X509 **x509p, EVP_PKEY **pkeyp, int bits, int seri
 	name = X509_get_subject_name(x);
 	
 	for(i=1;;i++) {
-		char *p, *v;
+		char *p;
+		unsigned char *v;
 		
 		sprintf(buffer, "xftpd.secure.certificate.name(%u)", i);
 		p = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
@@ -4138,7 +4148,7 @@ int ftpd_generate_certificate(X509 **x509p, EVP_PKEY **pkeyp, int bits, int seri
 			break;
 		}
 		
-		v = strchr(p, '=');
+		v = (unsigned char *)strchr(p, '=');
 		if(v) {
 			*v = 0;
 			v++;
@@ -4308,16 +4318,16 @@ int ftpd_load_config() {
 	if(!p) {
 		ftpd_secure_control_type = FTPD_SECURE_BOTH;
 	} else {
-		if(!stricmp(p, "normal-only")) {
+		if(!strcasecmp(p, "normal-only")) {
 			ftpd_secure_control_type = FTPD_SECURE_NEVER;
 		}
-		else if(!stricmp(p, "secure-only")) {
+		else if(!strcasecmp(p, "secure-only")) {
 			ftpd_secure_control_type = FTPD_SECURE_ALWAYS;
 		}
-		else if(!stricmp(p, "normal-or-secure")) {
+		else if(!strcasecmp(p, "normal-or-secure")) {
 			ftpd_secure_control_type = FTPD_SECURE_BOTH;
 		}
-		else if(!stricmp(p, "implicit")) {
+		else if(!strcasecmp(p, "implicit")) {
 			ftpd_secure_control_type = FTPD_SECURE_IMPLICIT;
 		}
 		else {
@@ -4332,13 +4342,13 @@ int ftpd_load_config() {
 	if(!p) {
 		ftpd_secure_data_type = FTPD_SECURE_BOTH;
 	} else {
-		if(!stricmp(p, "normal-only")) {
+		if(!strcasecmp(p, "normal-only")) {
 			ftpd_secure_data_type = FTPD_SECURE_NEVER;
 		}
-		else if(!stricmp(p, "secure-only")) {
+		else if(!strcasecmp(p, "secure-only")) {
 			ftpd_secure_data_type = FTPD_SECURE_ALWAYS;
 		}
-		else if(!stricmp(p, "normal-or-secure")) {
+		else if(!strcasecmp(p, "normal-or-secure")) {
 			ftpd_secure_data_type = FTPD_SECURE_BOTH;
 		}
 		else {

@@ -37,40 +37,29 @@
 #define __EVENTS_H
 
 #include "constants.h"
+#include "luainit.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_EVENTS
-//#  define DEBUG_EVENTS_CALLS
+#include "debug.h"
+#if defined(DEBUG_EVENTS)
+# define EVENTS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
+#else
+# define EVENTS_DBG(format, arg...)
 #endif
 
-#ifdef DEBUG_EVENTS
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define EVENTS_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define EVENTS_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#if defined(DEBUG_EVENTS_CALLS)
+# define EVENTS_CALLS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define EVENTS_DBG(format, arg...)
-#endif
-
-#ifdef DEBUG_EVENTS_CALLS
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define EVENTS_CALLS_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define EVENTS_CALLS_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
-#else
-#  define EVENTS_CALLS_DBG(format, arg...)
+# define EVENTS_CALLS_DBG(format, arg...)
 #endif
 
 #include "ftpd.h"
 #include "slaves.h"
 #include "mirror.h"
+#include "scripts.h"
 
 int events_init();
 void events_free();
 int events_clear();
-
 
 typedef struct event_parameter event_parameter;
 struct event_parameter {
@@ -99,20 +88,20 @@ struct event_callback {
 	struct obj o;
 	struct collectible c;
 	
-	char *function;
+	struct script_ctx *script;
+	
+	int function_index; /* function index in the EVENTS_REFTABLE */
 } __attribute__((packed));
 
 
 struct event_ctx *event_get(const char *name);
 struct event_ctx *event_create(const char *name);
 
-struct event_callback *event_get_callback(struct event_ctx *ctx, const char *function, int create);
+//struct event_callback *event_get_callback(struct event_ctx *ctx, const char *function, int create);
+struct event_callback *event_add_callback(struct event_ctx *ctx, struct script_ctx *script, int function_index);
 
-
-struct signal_callback *event_signal_add(char *name, int (*callback)(void *obj, void *param), void *param);
+struct signal_callback *event_signal_add(const char *name, int (*callback)(void *obj, void *param), void *param);
 struct signal_ctx *event_signal_get(const char *name, int create);
-
-int event_register(char *name, char *function);
 
 int event_raise(char *name, unsigned int param_count, struct event_parameter *params);
 

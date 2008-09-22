@@ -40,19 +40,11 @@
 #include "obj.h"
 #include "collection.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_NUKE
-#endif
-
-#ifdef DEBUG_NUKE
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define NUKE_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  include "logging.h"
-#  define NUKE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_NUKE)
+# define NUKE_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define NUKE_DBG(format, arg...)
+# define NUKE_DBG(format, arg...)
 #endif
 
 extern struct collection *nukes;

@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
 
 #include "obj.h"
@@ -43,7 +46,7 @@ unsigned long long int obj_balance = 0;
 /*
 	Initialize an object, given a 'self' and a destructor function.
 */
-int obj_init(struct obj *o, void *self, void (*destructor)(void *self)) {
+int FUNC_INLINE obj_init(struct obj *o, void *self, void (*destructor)(void *self)) {
 	
 	if(!o) {
 		OBJ_DBG("ERROR: o == NULL");
@@ -52,7 +55,6 @@ int obj_init(struct obj *o, void *self, void (*destructor)(void *self)) {
 
 	o->ref = 0;
 	o->destroyed = 0;
-	//o->type = type;
 
 	o->debug = 0;
 
@@ -65,7 +67,7 @@ int obj_init(struct obj *o, void *self, void (*destructor)(void *self)) {
 	return 1;
 }
 
-int obj_debug(struct obj *o, char debug) {
+int FUNC_INLINE obj_debug(struct obj *o, char debug) {
 	
 	if(!o) {
 		OBJ_DBG("ERROR: o == NULL");
@@ -82,7 +84,7 @@ int obj_debug(struct obj *o, char debug) {
 	reference count reach zero. Return 1 if the object
 	was destroyed, zero if it was marked as destroyed.
 */
-int obj_destroy(struct obj *o) {
+int FUNC_INLINE obj_destroy(struct obj *o) {
 	int self, debug;
 	
 	if(!o) {
@@ -117,7 +119,7 @@ int obj_destroy(struct obj *o) {
 	Return the 'self' passed as a parameter at the
 	object's initialization.
 */
-void *obj_self(struct obj *o) {
+void FUNC_INLINE *obj_self(struct obj *o) {
 	
 	if(!o) {
 		OBJ_DBG("ERROR: o == NULL");
@@ -132,7 +134,7 @@ void *obj_self(struct obj *o) {
 	object of being deleted until the obj_unref is
 	called.
 */
-int obj_ref(struct obj *o) {
+int FUNC_INLINE obj_ref(struct obj *o) {
 	
 	if(!o) {
 		OBJ_DBG("ERROR: o == NULL");
@@ -156,7 +158,7 @@ int obj_ref(struct obj *o) {
 	reaches zero. Retrun 1 if the object was
 	destroyed after the deletion.
 */
-int obj_unref(struct obj *o) {
+int FUNC_INLINE obj_unref(struct obj *o) {
 	
 	if(!o) {
 		OBJ_DBG("ERROR: o == NULL");
@@ -199,7 +201,7 @@ int obj_unref(struct obj *o) {
 	Return zero when the object is marked as destroyed,
 	1 otherwise.
 */
-int obj_isvalid(struct obj *o) {
+int FUNC_INLINE obj_isvalid(struct obj *o) {
 	
 	if(!o) {
 		OBJ_DBG("ERROR: o == NULL");

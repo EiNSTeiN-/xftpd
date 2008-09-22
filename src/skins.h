@@ -33,33 +33,35 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "users.h"
+#ifndef __SKINS_H
+#define __SKINS_H
 
-typedef struct {
-	collectible c @ collectible;
+#include "constants.h"
 
-	config_file *config;
+#include "debug.h"
+#if defined(DEBUG_SKINS)
+# define SKINS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
+#else
+# define SKINS_DBG(format, arg...)
+#endif
 
-	char *username;
-	char *usergroup;
+extern struct collection *skins;
 
-	unsigned int disabled; /* 1 if the user is disabled */
+int skins_init();
+int skins_reload();
+void skins_free();
 
-	_collection *clients;
-} user_ctx;
+int skins_load_directory(const char *dir);
+int skins_load_file(const char *filename);
 
-module users {
-	extern _collection *users @ all;
+int skins_isloaded(const char *filename);
+int skins_unload(const char *filename);
 
-	user_ctx *user_new @ add(char *username, char *usergroup, char *password);
-	user_ctx *user_get @ get(char *username);
+/*
+	Get a line from the skin files from its name.
+	If it cannot be found, a copy of default_value is returned instead,
+	or NULL if no default_value was given.
+*/
+char *skins_getline(const char *line, const char *default_value);
 
-	unsigned int user_auth @ auth(user_ctx *user, char *password);
-	unsigned int user_disable @ disable(user_ctx *user, unsigned int disabled);
-	unsigned int user_delete @ delete(user_ctx *user);
-	
-	int user_set_group @ chgroup(user_ctx *user, char *group);
-	int user_set_password @ chpass(user_ctx *user, char *password);
-
-	//user_ctx *collection_next @ iterate(_collection *c, unsigned int *iterator);
-}
+#endif /* __SKINS_H */

@@ -38,31 +38,17 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_VFS
-#  define DEBUG_SECTIONS
+#include "debug.h"
+#if defined(DEBUG_VFS)
+# define VFS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
+#else
+# define VFS_DBG(format, arg...)
 #endif
 
-#ifdef DEBUG_VFS
-# include "logging.h"
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define VFS_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define VFS_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#if defined(DEBUG_SECTIONS)
+# define SECTIONS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define VFS_DBG(format, arg...)
-#endif
-
-#ifdef DEBUG_SECTIONS
-# include "logging.h"
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SECTIONS_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SECTIONS_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
-#else
-#  define SECTIONS_DBG(format, arg...)
+# define SECTIONS_DBG(format, arg...)
 #endif
 
 #include "slaves.h"

@@ -36,7 +36,10 @@
 #ifndef __LOGGING_H
 #define __LOGGING_H
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
 
 void logging_write(const char* filename, const char *format, ...);

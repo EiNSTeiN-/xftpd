@@ -40,28 +40,27 @@
 /**********************************************/
 /*********** compilation options */
 
-/* Uncomment to globally disable any debugging */
-//#define NO_FTPD_DEBUG
-
-/* Uncomment to log to console, else the logging goes to file */
-//#define FTPD_DEBUG_TO_CONSOLE
+// also check debug.h for debug options
 
 /*
 	Uncomment the following line to disable tolua error checking
-	It save some space on executable size and may make a very
-	little faster code, but remove many very useful sanity checks.
+	It save some space on executable size and may make a code
+	that will run a bit faster, but it remove many very useful 
+	sanity checks.
 */
 //#define TOLUA_RELEASE
 
+#ifdef WIN32
 /* Uncomment these lines to compile each modules as services */
-#define MASTER_WIN32_SERVICE
+//#define MASTER_WIN32_SERVICE
 #define SLAVE_WIN32_SERVICE
 #define PROXY_WIN32_SERVICE
 
 /* Uncomment these lines to disable the windows' crash message box */
-#define MASTER_SILENT_CRASH
+//#define MASTER_SILENT_CRASH
 #define SLAVE_SILENT_CRASH
 #define PROXY_SILENT_CRASH
+#endif
 
 /*
 	Defines sleep time in ms for each executables.
@@ -77,9 +76,6 @@
 
 /* Defines whether to grow the file sizes as they are being transfered or not */
 #define GROW_FILE_SIZES_ON_TRANSFER
-
-/* Remove the irc advertisement "powered by ..." */
-#define NO_IRC_ADVERTISEMENT
 
 /* The official version number */
 #define VERSION_NUMBER	"0.4"
@@ -107,24 +103,29 @@
 #define SLAVE_CONFIG_FILE		"slave.conf"
 #define PROXY_CONFIG_FILE		"proxy.conf"
 
-#define SECTIONS_FOLDER			"\\sections\\"
-#define SLAVES_FOLDER			"\\slaves\\"
-#define USERS_FOLDER			"\\users\\"
+#define SCRIPTS_PATH			"./scripts"
+#define SKINS_PATH				"./skins"
+
+#define SECTIONS_FOLDER			"./sections"
+#define SLAVES_FOLDER			"./slaves"
+#define USERS_FOLDER			"./users"
 
 /*
 	maximum time elapsed between each time
 	the config files are written to disk
 */
-#define SECTIONS_CONFIG_TIMEOUT	(25 * 1000) /* 25 seconds */
-#define SLAVES_CONFIG_TIMEOUT	(25 * 1000) /* 25 seconds */
-#define USERS_CONFIG_TIMEOUT	(25 * 1000) /* 25 seconds */
+//#define SECTIONS_CONFIG_TIMEOUT	(25 * 1000) /* 25 seconds */
+//#define SLAVES_CONFIG_TIMEOUT	(25 * 1000) /* 25 seconds */
+//#define USERS_CONFIG_TIMEOUT	(25 * 1000) /* 25 seconds */
+
+#define CONFIG_SAVETIME		(20 * 1000) /* 20 seconds */
 
 #define NUKELOG_FILE			"xftpd.nukelog"
 
 #define SLAVE_UP_BUFFER_SIZE		(1024 * 1024)
 #define SLAVE_DN_BUFFER_SIZE		(65535)
 
-#define SLAVE_DELETE_INCOMPLETE_UPLOADS		TRUE
+#define SLAVE_DELETE_INCOMPLETE_UPLOADS		1
 
 /* timeout for master/slave data arrival */
 #define SLAVE_MASTER_TIMEOUT		(60 * 1000) /* 60 seconds */
@@ -201,5 +202,15 @@
 	The fileslog saving will be dropped if it goes above this value
 	It should also be less than any timeout*/
 #define FTPD_FILESLOG_THRESHOLD	(2 * 1000) /* 2 seconds */
+
+#define EVENTS_REFTABLE			"events_reftable"
+#define SLAVESELECTION_REFTABLE	"slaveselection_reftable"
+#define TIMER_REFTABLE			"timer_reftable"
+#define MIRRORS_REFTABLE		"mirrors_reftable"
+#define SITE_REFTABLE			"site_reftable"
+#define IRCCORE_REFTABLE		"irccore_reftable"
+#define SCRIPTS_REFTABLE		"scripts_reftable"
+
+#define FUNC_INLINE __inline__
 
 #endif /* __CONSTANTS_H */

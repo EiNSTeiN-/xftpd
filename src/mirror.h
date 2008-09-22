@@ -38,19 +38,15 @@
 
 #include "constants.h"
 #include "obj.h"
+#include "luainit.h"
+#include "collection.h"
+#include "scripts.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_MIRROR
-#endif
-
-#ifdef DEBUG_MIRROR
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define MIRROR_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define MIRROR_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_MIRROR)
+# define MIRROR_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define MIRROR_DBG(format, arg...)
+# define MIRROR_DBG(format, arg...)
 #endif
 
 extern struct collection *mirrors; /* collection of struct mirror_ctx */
@@ -58,8 +54,10 @@ extern struct collection *mirrors; /* collection of struct mirror_ctx */
 typedef void* mirror_param;
 
 struct mirror_lua_ctx {
-	char *func_name;
-	unsigned int param;
+	struct script_ctx *script;
+	
+	int function_index;
+	int param_index;
 } __attribute__((packed));
 
 typedef struct mirror_side mirror_side;
@@ -114,6 +112,7 @@ struct mirror_ctx *mirror_new(
 	void *param
 );
 
+/*
 struct mirror_ctx *mirror_lua_new(
 	struct slave_connection *src_cnx,
 	struct vfs_element *src_file,
@@ -122,5 +121,7 @@ struct mirror_ctx *mirror_lua_new(
 	char *func_name,
 	unsigned int param
 );
+*/
+int mirror_lua_new(lua_State *L);
 
 #endif /* __MIRROR_H */

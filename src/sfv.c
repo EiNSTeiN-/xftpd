@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
 
 #include "constants.h"
@@ -101,15 +104,15 @@ static unsigned int sfvlog_query_callback(struct slave_connection *cnx, struct s
 	unsigned int total_sfv = 0, total_entries = 0;
 	
 	if(!p) {
-		SFV_DBG("%I64u: query failed", cmd->uid);
+		SFV_DBG("" LLU ": query failed", cmd->uid);
 		return 0;
 	}
 
 	if(p->type != IO_SFVLOG) {
-		SFV_DBG("%I64u: returned non-IO_SFVLOG response.", cmd->uid);
+		SFV_DBG("" LLU ": returned non-IO_SFVLOG response.", cmd->uid);
 		
 		if(!event_onSlaveIdentSuccess(cnx)) {
-			SLAVES_DBG("%I64u: Slave connection rejected by onSlaveIdentSuccess", p->uid);
+			SLAVES_DBG("" LLU ": Slave connection rejected by onSlaveIdentSuccess", p->uid);
 			return 0;
 		}
 		
@@ -175,7 +178,7 @@ static unsigned int sfvlog_query_callback(struct slave_connection *cnx, struct s
 					
 					/* add the entry */
 					if(!sfv_add_entry(parent->sfv, sfventry->filename, sfventry->crc)) {
-						SFV_DBG("%I64u: Failed to add %s crc (%08x)", cmd->uid, sfventry->filename, sfventry->crc);
+						SFV_DBG("" LLU ": Failed to add %s crc (%08x)", cmd->uid, sfventry->filename, sfventry->crc);
 					}
 					
 					i = sizeof(struct sfvlog_entry) + strlen(sfventry->filename) + 1;
@@ -197,7 +200,7 @@ static unsigned int sfvlog_query_callback(struct slave_connection *cnx, struct s
 	SFV_DBG("Received %u sfv files from %s (%u entries total)", total_sfv, cnx->slave->name, total_entries);
 	
 	if(!event_onSlaveIdentSuccess(cnx)) {
-		SLAVES_DBG("%I64u: Slave connection rejected by onSlaveIdentSuccess", p->uid);
+		SLAVES_DBG("" LLU ": Slave connection rejected by onSlaveIdentSuccess", p->uid);
 		return 0;
 	}
 	
@@ -214,19 +217,19 @@ static unsigned int sfv_query_callback(struct slave_connection *cnx, struct slav
 	struct sfv_entry *entry;
 
 	if(!p) {
-		SFV_DBG("%I64u: query failed", cmd->uid);
+		SFV_DBG("" LLU ": query failed", cmd->uid);
 		return 0;
 	}
 
 	if(p->type != IO_SFV) {
-		SFV_DBG("%I64u: returned non-IO_SFV response.", cmd->uid);
+		SFV_DBG("" LLU ": returned non-IO_SFV response.", cmd->uid);
 		return 1;
 	}
 
 	/* get the local file for wich we received the sfv infos */
 	file = vfs_find_element(cnx->slave->vroot, cmd->data);
 	if(!file) {
-		SFV_DBG("%I64u: file %s was not found in vfs", cmd->uid, cmd->data);
+		SFV_DBG("" LLU ": file %s was not found in vfs", cmd->uid, cmd->data);
 		return 1;
 	}
 
@@ -248,7 +251,7 @@ static unsigned int sfv_query_callback(struct slave_connection *cnx, struct slav
 		i += current_length;
 
 		if(!sfv_add_entry(parent->sfv, entry->filename, entry->crc)) {
-			SFV_DBG("%I64u: Failed to add %s crc (%08x)", cmd->uid, entry->filename, entry->crc);
+			SFV_DBG("" LLU ": Failed to add %s crc (%08x)", cmd->uid, entry->filename, entry->crc);
 			continue;
 		}
 	}
@@ -303,7 +306,7 @@ static int get_entry_callback(struct collection *c, void *item, void *param) {
 	} *ctx = param;
 	struct sfv_entry *entry = item;
 
-	if(!stricmp(entry->filename, ctx->filename)) {
+	if(!strcasecmp(entry->filename, ctx->filename)) {
 		ctx->entry = entry;
 		return 0;
 	}
@@ -354,7 +357,7 @@ unsigned int make_sfv_query(struct slave_connection *cnx, struct vfs_element *fi
 
 	/* we do not directly keep a pointer to the file here because
 		by the time we receive the response, it may be deleted */
-	cmd = asynch_new(cnx, IO_SFV, MASTER_ASYNCH_TIMEOUT, path, strlen(path)+1, sfv_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_SFV, MASTER_ASYNCH_TIMEOUT, (unsigned char *)path, strlen(path)+1, sfv_query_callback, NULL);
 	free(path);
 	if(!cmd) return 0;
 
@@ -429,7 +432,7 @@ int make_sfvlog_query(struct slave_connection *cnx, struct collection *sfvfiles)
 
 	/* we do not directly keep a pointer to the file here because
 		by the time we receive the response, it may be deleted */
-	cmd = asynch_new(cnx, IO_SFVLOG, MASTER_ASYNCH_TIMEOUT, append_ctx.buffer, append_ctx.current, sfvlog_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_SFVLOG, MASTER_ASYNCH_TIMEOUT, (unsigned char *)append_ctx.buffer, append_ctx.current, sfvlog_query_callback, NULL);
 	free(append_ctx.buffer);
 	if(!cmd) return 0;
 	

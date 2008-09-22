@@ -33,10 +33,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "site.h"
-$#include "tree.h"
+#ifndef __LUASITE_H
+#define __LUASITE_H
 
-module site {
-	extern _collection *site_hooks @ hooks;
-	unsigned int site_tree_add @ hook(_collection *tree, char *trigger, char *handler);
-}
+#include <lualib.h>
+#include <lauxlib.h>
+#include <tolua++.h>
+
+#include "constants.h"
+#include "logging.h"
+
+TOLUA_API int luaopen_xftpd_site(lua_State* L);
+
+#endif /* __LUASITE_H */

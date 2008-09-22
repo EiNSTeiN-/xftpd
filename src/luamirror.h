@@ -33,45 +33,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __TIMEOUT_H
-#define __TIMEOUT_H
+#ifndef __LUAMIRROR_H
+#define __LUAMIRROR_H
+
+#include <lualib.h>
+#include <lauxlib.h>
+#include <tolua++.h>
 
 #include "constants.h"
+#include "logging.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_TIMEOUT
-#endif
+TOLUA_API int luaopen_xftpd_mirror(lua_State* L);
 
-#ifdef DEBUG_TIMEOUT
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define TIMEOUT_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define TIMEOUT_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
-#else
-#  define TIMEOUT_DBG(format, arg...)
-#endif
-
-typedef struct timeout_ctx timeout_ctx;
-struct timeout_ctx {
-	struct obj o;
-	struct collectible c;
-	
-	unsigned long long int timestamp; /* time of the last call */
-	unsigned long long int timeout; /* timeout in milliseconds */
-	char *function; /* function to call */
-} __attribute__((packed));
-
-extern struct collection *timeouts;
-
-int timeout_init();
-void timeout_free();
-
-
-unsigned int timeout_add(char *function, unsigned long long int timeout, unsigned long long int timestamp);
-unsigned int timeout_del(char *function);
-unsigned int timeout_poll();
-
-void timeout_clear();
-
-#endif /* __TIMEOUT_H */
+#endif /* __LUAMIRROR_H */

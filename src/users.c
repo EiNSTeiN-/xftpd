@@ -33,8 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
-#include <io.h>
+#endif
+
 #include <stdio.h>
 #include <openssl/md5.h>
 
@@ -45,59 +47,57 @@
 #include "ftpd.h"
 #include "time.h"
 #include "events.h"
+#include "dir.h"
+#include "asprintf.h"
 
 struct collection *users = NULL;
 
+#define ENDSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strcasecmp(&a[strlen(a)-strlen(b)], b))
+#define BEGINSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strncasecmp(a, b, strlen(b)))
 
 int users_init() {
 	struct user_ctx *user;
-	struct _finddata_t fd;
-	intptr_t handle;
-	char *path, *file;
+	struct dir_ctx *dir;
+	char *path;
 
 	USERS_DBG("Loading ...");
 
 	/* load all users from file here */
 	users = collection_new(C_CASCADE);
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(USERS_FOLDER);
 	if(!path) {
 		USERS_DBG("Memory error");
 		return 0;
 	}
 
-	file = malloc(strlen(path) + strlen(USERS_FOLDER "user.*") + 1);
-	if(!file) {
-		USERS_DBG("Memory error");
-		free(path);
-		return 0;
-	}
-	sprintf(file, "%s" USERS_FOLDER "user.*", path);
-	free(path);
-
-	handle = _findfirst(file, &fd);
-	free(file);
-	if (handle == -1) {
-		USERS_DBG("Couldn't load \"" USERS_FOLDER "user.*\"");
+	dir = dir_open(path, "user.*");
+	if (!dir) {
+		USERS_DBG("Couldn't load \"%s\"", path);
 	} else {
 		do {
-			if(!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-			if(fd.attrib & _A_SUBDIR) continue;
-			if((strlen(fd.name) > 4) && !stricmp(&fd.name[strlen(fd.name)-4], ".tmp")) continue;
+			if(dir_attrib(dir) & DIR_SUBDIR) continue;
+			if(ENDSWITH(dir_name(dir), ".tmp")) continue;
 
-			user = user_load(fd.name);
+			user = user_load(dir_name(dir));
 			if(!user) {
-				USERS_DBG("Could not load user from file %s", fd.name);
+				USERS_DBG("Could not load user from file %s", dir_name(dir));
 				continue;
 			}
-		} while(!_findnext(handle, &fd));
-		_findclose(handle);
+		} while(dir_next(dir));
+		dir_close(dir);
 	}
+	free(path);
 
 	USERS_DBG("%u user(s) loaded.", collection_size(users));
 
 	return 1;
 }
+
+#undef BEGINSWITH
+#undef ENDSWITH
 
 void users_free() {
 
@@ -135,7 +135,7 @@ static void user_obj_destroy(struct user_ctx *user) {
 
 	/* delete the user file */
 	if(user->config) {
-		config_destroy(user->config);
+		config_close(user->config);
 		user->config = NULL;
 	}
 	
@@ -161,20 +161,18 @@ struct user_ctx *user_load(char *filename) {
 
 	if(!filename) return NULL;
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(USERS_FOLDER);
 	if(!path) {
 		USERS_DBG("Memory error");
 		return NULL;
 	}
 
-	fullpath = malloc(strlen(path) + strlen(USERS_FOLDER) + strlen(filename) + 1);
+	fullpath = bprintf("%s/%s", path, filename);
+	free(path);
 	if(!fullpath) {
 		USERS_DBG("Memory error");
-		free(path);
 		return NULL;
 	}
-	sprintf(fullpath, "%s" USERS_FOLDER "%s", path, filename);
-	free(path);
 
 	filename = fullpath;
 
@@ -243,7 +241,7 @@ struct user_ctx *user_load(char *filename) {
 	obj_init(&user->o, user, (obj_f)user_obj_destroy);
 	collectible_init(user);
 
-	user->config = config_new(filename, USERS_CONFIG_TIMEOUT);
+	user->config = config_open(filename);
 	free(filename);
 	if(!user->config) {
 		USERS_DBG("Memory error");
@@ -266,7 +264,7 @@ struct user_ctx *user_load(char *filename) {
 
 	if(!collection_add(users, user)) {
 		USERS_DBG("Collection error");
-		config_destroy(user->config);
+		config_close(user->config);
 		collection_destroy(user->clients);
 		free(username);
 		free(usergroup);
@@ -288,9 +286,9 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 
 	if(!username || !usergroup || !password) return NULL;
 
-	sprintf(filename, "user.%I64u", time_now());
+	sprintf(filename, "user." LLU "", time_now());
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(".");
 	if(!path) {
 		USERS_DBG("Memory error");
 		return NULL;
@@ -315,7 +313,7 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 	obj_init(&user->o, user, (obj_f)user_obj_destroy);
 	collectible_init(user);
 
-	user->config = config_new(fullpath, USERS_CONFIG_TIMEOUT);
+	user->config = config_open(fullpath);
 	free(fullpath);
 	if(!user->config) {
 		USERS_DBG("Memory error");
@@ -332,7 +330,7 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 	user->username = strdup(username);
 	if(!user->username) {
 		USERS_DBG("Memory error");
-		config_destroy(user->config);
+		config_close(user->config);
 		free(user);
 		return NULL;
 	}
@@ -341,7 +339,7 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 	user->usergroup = strdup(usergroup);
 	if(!user->usergroup) {
 		USERS_DBG("Memory error");
-		config_destroy(user->config);
+		config_close(user->config);
 		free(user->username);
 		free(user);
 		return NULL;
@@ -350,7 +348,7 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 
 	user->clients = collection_new(C_CASCADE);
 
-	MD5(password, strlen(password), user->password_hash);
+	MD5((unsigned char *)password, strlen(password), (unsigned char *)user->password_hash);
 
 	memset(password_hash, 0, sizeof(password_hash));
 	for(i=0;i<MD5_DIGEST_LENGTH;i++) {
@@ -372,7 +370,7 @@ struct user_ctx *user_new(char *username, char *usergroup, char *password) {
 
 static int user_get_matcher(struct collection *c, struct user_ctx *user, char *username) {
 
-	return !stricmp(user->username, username);
+	return !strcasecmp(user->username, username);
 }
 
 /* return a user from its username */
@@ -420,7 +418,7 @@ int user_set_password(struct user_ctx *user, char *password) {
 		return 0;
 	}
 
-	MD5(password, strlen(password), user->password_hash);
+	MD5((unsigned char *)password, strlen(password), (unsigned char *)user->password_hash);
 
 	memset(password_hash, 0, sizeof(password_hash));
 	for(i=0;i<MD5_DIGEST_LENGTH;i++) {
@@ -439,7 +437,7 @@ unsigned int user_auth(struct user_ctx *user, char *password) {
 
 	if(!user || !password) return 0;
 
-	MD5(password, strlen(password), password_hash);
+	MD5((unsigned char *)password, strlen(password), (unsigned char *)password_hash);
 
 	return !memcmp(user->password_hash, password_hash, MD5_DIGEST_LENGTH);
 }

@@ -33,62 +33,31 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "nuke.h"
+$#include "sfv.h"
 
 typedef struct {
-	collectible c @ collectible;
-
-	/* parent nuke structure */
-	nuke_ctx *nuke;
+	tolua_readonly collectible c @ collectible;
 	
-	/*
-		we do not reference users here because it
-		has to be valid even after the user is deleted
-	*/
-	char *name;
-
-	/* ammount of credit nuked */
-	unsigned long long int ammount;
-
-} nuke_nukee;
+	tolua_readonly unsigned int crc @ checksum;
+	tolua_readonly const char *filename;
+} sfv_entry;
 
 typedef struct {
-	collectible c @ collectible;
-
-	/*
-		nuked element, null if it has been deleted
-		This is here only for convenience, you should
-		use 'path' when possible.
-	*/
-	vfs_element *element;
-
-	/* always point to the full path to the element */
-	char *path;
+	tolua_readonly collectible c @ collectible;
 	
-	/* time at wich the directory was nuked */
-	unsigned long long int timestamp;
+	tolua_readonly collection *entries; /* collection of sfv_entry structures */
+	tolua_readonly vfs_element *element;
+} sfv_ctx;
 
-	unsigned int multiplier;
-	char *nuker;
-	char *reason;
-
-	/* struct nuke_nukee */
-	_collection *nukees;
-
-} nuke_ctx;
-
-module nukees {
-
-	nuke_nukee *nukee_add @ add(nuke_ctx *nuke, char *name, unsigned long long int ammount);
-	nuke_nukee *nukee_get @ get(nuke_ctx *nuke, char *name);
-	void nukee_del @ del(nuke_nukee *nukee);
+module sfv {
+	bool make_sfv_query @ query(slave_connection *cnx, vfs_element *file);
+	sfv_entry *sfv_add_entry @ add(sfv_ctx *sfv, char *filename, unsigned int crc);
+	sfv_entry *sfv_get_entry @ get(sfv_ctx *sfv, char *filename);
+	void sfv_delete @ clean(sfv_ctx *sfv);
 }
 
-module nukes {
-	extern _collection *nukes @ all;
-	
-	nuke_ctx *nuke_add @ add(vfs_element *element, unsigned int multiplier, char *nuker, char *reason);
-	void nuke_del @ del(nuke_ctx *nuke);
-	
-	nuke_ctx *nuke_check @ check(vfs_element *element);
-}
+struct sfv_ctx {
+	tolua_outside sfv_entry *sfv_add_entry @ add(char *filename, unsigned int crc);
+	tolua_outside sfv_entry *sfv_get_entry @ get(char *filename);
+	tolua_outside void sfv_delete @ clean();
+};

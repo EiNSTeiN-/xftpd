@@ -33,8 +33,20 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "update.h"
+$#include "skins.h"
 
-module update {
-	int update_slave @ slave(slave_connection *ctx, char *filename);
+module skins {
+	struct collection *skins @ all;
+	
+	bool skins_load_directory @ load_directory(const char *dir);
+	bool skins_load_file @ load_file(const char *filename);
+
+	bool skins_isloaded @ isloaded(const char *filename);
+	bool skins_unload @ unload(const char *filename);
+
+	/*
+		Get a line from the skin files from its name.
+		If it cannot be found, NULL is returned
+	*/
+	//custom: char *skins_getline @ getline(const char *line);
 }

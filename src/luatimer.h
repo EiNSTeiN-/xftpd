@@ -33,13 +33,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "time.h"
+#ifndef __LUATIMER_H
+#define __LUATIMER_H
 
-module time {
-	unsigned long long int time_now @ now();
-	unsigned long long int timer(unsigned long long int start);
+#include <lualib.h>
+#include <lauxlib.h>
+#include <tolua++.h>
 
-	void time_stamp_to_formated @ format(unsigned long long int time, unsigned short *day,
-					 unsigned short *month, unsigned short *year,
-					unsigned short *hour, unsigned short *minute);
-}
+#include "constants.h"
+#include "logging.h"
+
+TOLUA_API int luaopen_xftpd_timer(lua_State* L);
+
+#endif /* __LUATIMER_H */

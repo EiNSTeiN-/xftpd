@@ -38,18 +38,11 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SLAVESELECTION
-#endif
-
-#ifdef DEBUG_SLAVESELECTION
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SLAVESELECTION_DBG(format, arg...) printf("["__FILE__ ": %d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SLAVESELECTION_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ": %d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_SLAVESELECTION)
+# define SLAVESELECTION_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SLAVESELECTION_DBG(format, arg...)
+# define SLAVESELECTION_DBG(format, arg...)
 #endif
 
 
@@ -58,7 +51,5 @@ void slaveselection_free();
 
 struct slave_connection *slaveselection_download(struct vfs_element *file);
 struct slave_connection *slaveselection_upload(struct vfs_element *folder);
-
-int slaveselection_register(char *name, const char *function);
 
 #endif /* __SLAVESELECTION_H */

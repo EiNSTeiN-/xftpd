@@ -38,22 +38,14 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_OBJ
-#endif
-
-#ifdef DEBUG_OBJ
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define OBJ_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  include "logging.h"
-#  define OBJ_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_OBJ)
+# define OBJ_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define OBJ_DBG(format, arg...)
+# define OBJ_DBG(format, arg...)
 #endif
 
-struct obj { /* 2+1+1+1+4+4 = 13 */
+struct obj {
 	unsigned short ref; /* more than 65535 refs ? shouldn't be. */
 	char destroyed;
 
@@ -66,46 +58,46 @@ struct obj { /* 2+1+1+1+4+4 = 13 */
 
 typedef void (*obj_f)(void *self);
 
-int obj_debug(struct obj *o, char debug);
+int FUNC_INLINE obj_debug(struct obj *o, char debug);
 
 extern unsigned long long int obj_balance;
 
 /*
 	Initialize an object, given a 'self' and a destructor function.
 */
-int obj_init(struct obj *o, void *self, void (*destructor)(void *self));
+int FUNC_INLINE obj_init(struct obj *o, void *self, void (*destructor)(void *self));
 
 /*
 	Mark the object as deleted or delete it if the
 	reference count reach zero. Return 1 if the object
 	was deleted, zero if it was marked as deleted.
 */
-int obj_destroy(struct obj *o);
+int FUNC_INLINE obj_destroy(struct obj *o);
 
 /*
 	Return the 'self' passed as a parameter at the
 	object's initialization.
 */
-void *obj_self(struct obj *o);
+void FUNC_INLINE *obj_self(struct obj *o);
 
 /*
 	Increase the reference count, preventing the
 	object of being deleted until the obj_unref is
 	called.
 */
-int obj_ref(struct obj *o);
+int FUNC_INLINE obj_ref(struct obj *o);
 
 /*
 	Decrease the reference count, and call the
 	destructor function if it's reference count
 	reaches zero.
 */
-int obj_unref(struct obj *o);
+int FUNC_INLINE obj_unref(struct obj *o);
 
 /*
 	Return zero when the object is marked as destroyed,
 	1 otherwise.
 */
-int obj_isvalid(struct obj *o);
+int FUNC_INLINE obj_isvalid(struct obj *o);
 
 #endif /* __OBJ_H */

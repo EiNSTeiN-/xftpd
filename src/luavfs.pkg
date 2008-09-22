@@ -1,0 +1,176 @@
+/*
+ * Copyright (c) 2007, The xFTPd Project.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *
+ *     * Neither the name of the xFTPd Project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ *     * Redistributions of this project or parts of this project in any form
+ *       must retain the following aknowledgment:
+ *       "This product includes software developed by the xFTPd Project.
+ *        http://www.xftpd.com/ - http://www.xftpd.org/"
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE xFTPd PROJECT ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE xFTPd PROJECT BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+$#include "vfs.h"
+$#include "scripts.h"
+
+/* sections will be displayed in the root directory */
+typedef struct {
+	tolua_readonly collectible c @ collectible;
+	
+	tolua_readonly char *name;
+	
+	tolua_readonly config_file *config;
+	
+	tolua_readonly collection *roots; /* root folder for this section */
+	tolua_readonly collection *slaves; /* slaves_ctx mapped to this section */
+} vfs_section;
+
+enum vfs_type {
+	VFS_FILE,
+	VFS_FOLDER,
+	VFS_LINK
+};
+
+/* represents any member of the file system */
+typedef struct {
+	tolua_readonly collectible c @ collectible;
+	
+	tolua_readonly vfs_element *parent;	/* parent element */
+	tolua_readonly vfs_section *section;	/* id of the owner in sections_collection */
+	tolua_readonly unsigned int type;				/* folder, file, ... */
+	tolua_readonly char *name;					/* element name */
+	tolua_readonly char *owner;				/* element's owner */
+	
+	tolua_readonly unsigned long long int size; /* element's size */
+	tolua_readonly unsigned long long int timestamp; /* modification timestamp */
+	tolua_readonly unsigned long long int xfertime; /* transfer time. not kept across boots. */
+	
+	tolua_readonly collection *childs;		/* sub-elements (NULL for non-VFS_FOLDER) */
+	
+	tolua_readonly collection *available_from @ online_from; /* collection of struct slave_connection
+								specifying from wich slave the file is available */
+	tolua_readonly collection *offline_from; /* collection of struct slave_ctx
+						containing wich slave the file is offline from */
+
+	tolua_readonly ftpd_client *uploader; /* only one uploader allowed at a time per slave */
+	tolua_readonly collection *leechers; /* collection of ftpd_client downloading the file */
+
+	tolua_readonly unsigned int checksum; /* checksum for that file, 0 if unknown */
+	tolua_readonly sfv_ctx *sfv; /* structure wich holds the sfv informations.
+							this is stored at folder level, so even when files
+							are not yet uploaded the information will still be present */
+
+	/* tracking for mirror operations */
+	tolua_readonly collection *mirror_from; /* (outgoing) mirrors from this slave */
+	tolua_readonly collection *mirror_to; /* (incoming) mirrors to this slave */
+
+	/* clients that are currently browsing the folder */
+	tolua_readonly collection *browsers;
+	
+	/* symlinks structures */
+	tolua_readonly collection *link_from; /* from which symlink this file is pointed from */
+	tolua_readonly vfs_element *link_to; /* to wich file this symlink points */
+	
+	tolua_readonly nuke_ctx *nuke;
+} vfs_element;
+
+module vfs {
+	/* represent the root directory (the only vfs_element with no parent) */
+	extern vfs_element *vfs_root @ root;
+	
+	//custom: char *vfs_get_relative_path @ relative_path(vfs_element *container, vfs_element *element);
+	bool vfs_is_child @ ischild(vfs_element *parent, vfs_element *child);
+	
+	vfs_element *vfs_get_section_element @ section_element(vfs_element *element);
+	vfs_section *vfs_get_section @ section(vfs_element *element);
+	
+	// rawget doesn't follow symlinks
+	vfs_element *vfs_raw_find_element @ rawget(vfs_element *container, char *path);
+	vfs_element *vfs_find_element @ get(vfs_element *container, char *path);
+	
+	vfs_element *vfs_create_folder @ mkdir(vfs_element *container, char *name, const char *owner);
+	vfs_element *vfs_create_file @ mkfile(vfs_element *container, char *name, const char *owner);
+	vfs_element *vfs_create_symlink @ mklink(vfs_element *container, vfs_element *target, char *name, const char *owner);
+
+	void vfs_recursive_delete @ delete(vfs_element *element);
+	
+	/* recursively delete an element from the site. this is not
+		in the vfs module because it also delete the element and
+		all its contents from the slaves */
+	bool ftpd_wipe @ wipe(vfs_element *element);
+	
+	bool ftpd_wipe_from @ wipe_from(vfs_element *element, slave_ctx *slave);
+}
+
+struct vfs_element {
+	//custom: char *vfs_get_relative_path @ relative_path(vfs_element *element);
+	tolua_outside bool vfs_is_child @ ischild(vfs_element *child);
+	
+	tolua_outside vfs_element *vfs_get_section_element @ section_element();
+	tolua_outside vfs_section *vfs_get_section @ section();
+	
+	// rawget doesn't follow symlinks
+	tolua_outside vfs_element *vfs_raw_find_element @ rawget(char *path);
+	tolua_outside vfs_element *vfs_find_element @ get(char *path);
+	
+	tolua_outside vfs_element *vfs_create_folder @ mkdir(char *name, const char *owner);
+	tolua_outside vfs_element *vfs_create_file @ mkfile(char *name, const char *owner);
+	tolua_outside vfs_element *vfs_create_symlink @ mklink(vfs_element *target, char *name, const char *owner);
+
+	tolua_outside void vfs_recursive_delete @ delete();
+	
+	/* recursively delete an element from the site. this is not
+		in the vfs module because it also delete the element and
+		all its contents from the slaves */
+	tolua_outside bool ftpd_wipe @ wipe();
+	
+	tolua_outside bool ftpd_wipe_from @ wipe_from(slave_ctx *slave);
+};
+
+module sections {
+	extern collection *sections @ all;
+	
+	vfs_section *section_new @ add(const char *name);
+	vfs_section *section_get @ get(const char *name);
+	
+	bool section_dump @ save(vfs_section *section);
+	bool section_del @ delete(vfs_section *section);
+	
+	bool section_link_slave @ addslave(vfs_section *section, slave_ctx *slave);
+	bool section_unlink_slave @ delslave(vfs_section *section, slave_ctx *slave);
+	bool section_link_root @ addroot(vfs_section *section, vfs_element *root);
+	bool section_unlink_root @ delroot(vfs_section *section, vfs_element *root);
+}
+
+struct vfs_section {
+	tolua_outside bool section_dump @ save();
+	tolua_outside bool section_del @ delete();
+	
+	tolua_outside bool section_link_slave @ addslave(slave_ctx *slave);
+	tolua_outside bool section_unlink_slave @ delslave(slave_ctx *slave);
+	tolua_outside bool section_link_root @ addroot(vfs_element *root);
+	tolua_outside bool section_unlink_root @ delroot(vfs_element *root);
+};
