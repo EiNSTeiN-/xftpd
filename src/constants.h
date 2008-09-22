@@ -58,9 +58,6 @@
 #define SLAVE_WIN32_SERVICE
 #define PROXY_WIN32_SERVICE
 
-/* compile with irc client activated */
-#define MASTER_WITH_IRC_CLIENT
-
 /* Uncomment these lines to disable the windows' crash message box */
 #define MASTER_SILENT_CRASH
 #define SLAVE_SILENT_CRASH
@@ -71,27 +68,30 @@
 #define SLAVE_SLEEP_TIME		10
 #define PROXY_SLEEP_TIME		10
 
+/* compile with irc client activated */
+#define MASTER_WITH_IRC_CLIENT
+
 /* Defines whether to grow the file sizes as they are being transfered or not */
 #define GROW_FILE_SIZES_ON_TRANSFER
 
 /* Activate/desactivate mirrors */
-#define NO_MIRRORS
+//#define NO_MIRRORS
 
 /* The timestamp after wich the server will stop working */
 //#define FTPD_STOP_WORKING_TIMESTAMP		1172379600LLU 			//0.1b (02 / 25 / 2007)
-#define FTPD_STOP_WORKING_TIMESTAMP		1174798800LLU 			//0.2b (03 / 25 / 2007)
+//#define FTPD_STOP_WORKING_TIMESTAMP		1174798800LLU 			//0.2b (02 / 25 / 2007)
 
 /* Remove the irc advertisement "powered by ..." */
 //#define NO_IRC_ADVERTISEMENT
 
 /* The official version number */
-#define VERSION_NUMBER	"0.2b"
+#define VERSION_NUMBER	"0.3b"
 
 #define SLAVE_PLATFORM_CURRENT			SLAVE_PLATFORM_WIN32
 
 /* The slave's revision number */
 #define SLAVE_UPDATE_FILENAME_PATTERN	"xftpd_update%I64u.exe"
-#define SLAVE_REVISION_NUMBER			10LLU
+#define SLAVE_REVISION_NUMBER			12LLU
 
 /**********************************************/
 /**********************************************/

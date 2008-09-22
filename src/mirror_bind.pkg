@@ -72,7 +72,7 @@ module mirrors {
 		slave_connection *dest_cnx,
 		vfs_element *dest_file,
 		char *func_name,
-		mirror_param param
+		unsigned int param
 	);
 	
 	unsigned int mirror_cancel @ cancel(mirror_ctx *mirror);

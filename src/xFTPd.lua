@@ -33,6 +33,8 @@
    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ]]
 
+-- Contains the underlying functions used by xFTPd's scripts
+
 function printf(...)
 	io.write(string.format(unpack(arg)));
 end
@@ -52,24 +54,21 @@ MB = (KB * 1024);
 GB = (MB * 1024);
 TB = (GB * 1024);
 
-
 --------------------------------------
 -- APIs for the collection module
 function casted_iteration(state, ctx)
 
-	if not ctx.iter then return nil, nil; end
-
-	o = collection.iterate(state, ctx.iter);
-	if not o then
-		return nil, nil;
+	if not ctx.iter then
+		return nil;
 	end
 
-	o = tolua.cast(o, ctx.type);
-	if not o then
-		return nil, nil;
+	local _c = tolua.cast(collection.iterate(state, ctx.iter), ctx.totype);
+	--local _c = collection.iterate(state, ctx.iter);
+	if not _c then
+		return nil;
 	end
 
-	return ctx, o;
+	return ctx, _c;
 end
 
 -- make something like below possible:
@@ -78,8 +77,9 @@ end
 --		-- item can now be used as
 --		-- a "usertype_to_cast" object type
 --	end
-function casted(c, type)
-	return casted_iteration, c, { iter = collection.iterator(c), type = type };
+function casted(c, _totype)
+	local t = { iter = collection.iterator(c); totype = _totype; };
+	return casted_iteration, c, t;
 end
 
 
@@ -153,12 +153,12 @@ skinned_global_table = nil;
 function skinned(line, _table)
 	local last_table = skinned_global_table;
 	local contents = nil;
-
-	skinned_global_table = _table;
-
+	
 	assert(line, "no line");
 	assert(xftpd_skin_config, "no config loaded");
 	contents = config.read(xftpd_skin_config, line);
+	
+	skinned_global_table = _table or skintable();
 	
 	if not contents then
 		assert(line, "line fucked up");
@@ -195,7 +195,7 @@ function skinned(line, _table)
 			local _s = "return string.format(".. fmt ..", ".. str ..");";
 			local chunk, err = loadstring(_s, "skinned chunk");
 			assert(chunk, "error calling chunk \"".. _s .."\" : ".. (err or "error"));
-			return chunk();
+			return chunk() or "";
 		end
 	);
 
@@ -203,12 +203,12 @@ function skinned(line, _table)
 	contents = string.gsub(contents, "%$%b[]",
 		function(v)
 			-- actually interpret and call the function
-			local v = string.gsub(v, "%$%[(.+)%]",
+			v = string.gsub(v, "%$%[(.+)%]",
 				function(v)
 					local v = "return ".. v;
 					local chunk, err = loadstring(v, "skinned chunk");
 					assert(chunk, "error calling chunk \"".. v .."\" : ".. (err or "error"));
-					return chunk();
+					return chunk() or "";
 				end
 			);
 			return v;
@@ -219,11 +219,11 @@ function skinned(line, _table)
 	contents = string.gsub(contents, "%$exec%b[]",
 		function(v)
 			-- actually interpret and execute all chunks
-			local v = string.gsub(v, "%$exec%[(.+)%]",
+			v = string.gsub(v, "%$exec%[(.+)%]",
 				function(v)
 					local chunk, err = loadstring(v, "skinned chunk");
 					assert(chunk, "error calling chunk \"".. v .."\" : ".. (err or "error"));
-					return chunk();
+					return chunk() or "";
 				end
 			);
 			return v;
@@ -233,5 +233,116 @@ function skinned(line, _table)
 	skinned_global_table = last_table;
 	
 	return contents;
+end
+
+
+function hook(prefix, name, params)
+
+	local s = string.gsub(name, " ", "_");
+
+	if(params.irc) then
+		irc.hook(irc.hooks, name, prefix .."irc_".. s, params.irc_source or IRC_SOURCE_ANY);
+		
+		-- create a new wrapper function
+		local v = "function ".. prefix .."irc_".. s .."(msg)\n"..
+			"local _ctx = { source = \"irc\"; func = irc.broadcast; param = msg.dest; msg = msg; user = getuser(msg.src); };\n"..
+			"local r = ".. prefix .. s .."(_ctx, msg.args);\n"..
+			"_ctx = nil;\n"..
+			"return r;\n"..
+		"end\n";
+		
+		assert(loadstring(v, "irc wrapper for \"".. name .."\""))();
+		v = nil;
+	end
+	
+	if(params.site) then
+		site.hook(site.hooks, name, prefix .."site_".. s);
+		
+		-- create a new wrapper function
+		local v = "function ".. prefix .."site_".. s .."(client, args)\n"..
+			"local _ctx = { source = \"site\"; func = clients.msg; param = client; client = client; user = client.user; root = client.working_directory; };\n"..
+			"local r = ".. prefix .. s .."(_ctx, args);\n"..
+			"_ctx = nil;\n"..
+			"return r;\n"..
+		"end\n";
+		
+		assert(loadstring(v, "site wrapper for \"".. name .."\""))();
+		v = nil;
+	end
+	
+	return true;
+end
+
+function echo(ctx, fmt, args)
+	
+	assert(ctx and ctx.func and ctx.param and ctx.source, "invalid echo context");
+	
+	return ctx.func(ctx.param, skinned(ctx.source ..":".. fmt, args));
+end
+
+-- return the user associated with the given hostname
+function getuser(hostname)
+
+	if not hostname then
+		return nil;
+	end
+
+	local k, user = nil,nil;
+	for k, user in casted(users.all, "user_ctx") do
+		local s = config.read(user.config, "hostname", nil);
+		if s and (string.lower(s) == string.lower(hostname)) then
+			return user;
+		end
+	end
+
+	return nil;
+end
+
+-- this function return true if the hostname
+-- is granted the specified privilege
+function isgranted(hostname, privilege)
+	
+	if not privilege then
+		return false;
+	end
+
+	if(privilege == "any") then
+		return true;
+	end
+	
+	if not hostname then
+		return false;
+	end
+
+	local user = getuser(hostname);
+	if not user then
+		return false;
+	end
+
+	local priv = config.read(user.config, privilege .. "-privilege", nil);
+	if(priv == "true") then return true; end
+
+	return false;
+end
+
+-- read a privilege from a user
+function readpriv(user, privilege)
+	
+	if not privilege then
+		return false;
+	end
+	
+	if(privilege == "any") then
+		return true;
+	end
+	
+	if not user then
+		return false;
+	end
+
+	local priv = config.read(user.config, privilege .. "-privilege", nil);
+	if(priv == "true") then return true; end
+
+	return false;
 end
 

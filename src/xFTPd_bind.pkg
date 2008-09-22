@@ -45,6 +45,10 @@ module xFTPd {
 	void main_reload @ reload();
 }
 
+/*module luainit {
+	int luainit_dumpstate @ dumpstate(char *file);
+}*/
+
 $pfile "collection_bind.pkg"
 $pfile "events_bind.pkg"
 $pfile "config_bind.pkg"

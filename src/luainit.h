@@ -40,9 +40,31 @@
 #include "lauxlib.h"
 #include "tolua.h"
 
+#include "constants.h"
+#include "logging.h"
+
+#ifndef NO_FTPD_DEBUG
+#  define DEBUG_LUAINIT
+#endif
+
+#ifdef DEBUG_LUAINIT
+# ifdef FTPD_DEBUG_TO_CONSOLE
+#  define LUAINIT_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+# else
+#  define LUAINIT_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
+# endif
+#else
+#  define LUAINIT_DBG(format, arg...)
+#endif
+
 extern lua_State* L;
 
 int luainit_init();
+int luainit_reload();
 void luainit_free();
+
+int luainit_garbagecollect();
+
+int luainit_dump();
 
 #endif /* __LUAINIT_H */

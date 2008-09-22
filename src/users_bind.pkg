@@ -35,7 +35,6 @@
 
 $#include "users.h"
 
-
 typedef struct {
 	collectible c @ collectible;
 

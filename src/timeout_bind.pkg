@@ -47,7 +47,7 @@ typedef struct {
 module timeout {
 	extern _collection *timeouts @ all;
 
-	unsigned int timeout_add @ set(char *function, unsigned long long int timeout, unsigned long long int start = time_now());
+	unsigned int timeout_add @ set (char *function, unsigned long long int timeout, unsigned long long int start);
 	unsigned int timeout_del @ delete(char *function);
 
 	void timeout_clear @ clear();

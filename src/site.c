@@ -114,11 +114,7 @@ static unsigned int call_site_handlers(struct collection *c, struct ftpd_collect
 		if(stacktop != lua_gettop(L)) {
 			SITE_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 		}
-		lua_setgcthreshold(L, 0);
-		/*if(lua_getgccount(L) > gc_count) {
-			SITE_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-				handler, lua_getgccount(L));
-		}*/
+		//luainit_garbagecollect();
 		return 1;
 	}
 
@@ -170,11 +166,7 @@ static unsigned int call_site_handlers(struct collection *c, struct ftpd_collect
 			if(stacktop != lua_gettop(L)) {
 				SITE_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 			}
-			lua_setgcthreshold(L, 0);
-			/*if(lua_getgccount(L) > gc_count) {
-				SITE_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-					handler, lua_getgccount(L));
-			}*/
+			//luainit_garbagecollect();
 			return 1;
 		}
 
@@ -190,11 +182,7 @@ static unsigned int call_site_handlers(struct collection *c, struct ftpd_collect
 		SITE_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
 	}
 	
-	lua_setgcthreshold(L, 0);
-	/*if(lua_getgccount(L) > gc_count) {
-		SITE_DBG("WARNING: in function %s: some data cannot be garbage collected (now %u Kbytes).",
-			handler, lua_getgccount(L));
-	}*/
+	//luainit_garbagecollect();
 
 	return 1;
 }

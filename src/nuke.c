@@ -215,7 +215,8 @@ struct nuke_ctx *nuke_add(struct vfs_element *element, unsigned int multiplier, 
 		return NULL;
 	}
 
-	nuke_dump_all();
+	//nuke_dump_all();
+	logging_write(NUKELOG_FILE, "nuke;%s;%u;%s;%s;%I64u\r\n", nuke->path, nuke->multiplier, nuke->nuker, nuke->reason, nuke->timestamp);
 
 	return nuke;
 }
@@ -264,7 +265,8 @@ struct nuke_nukee *nukee_add(struct nuke_ctx *nuke, char *name, unsigned long lo
 		return NULL;
 	}
 
-	nuke_dump_all();
+	//nuke_dump_all();
+	logging_write(NUKELOG_FILE, "nukee;%s;%s;%I64u\r\n", nukee->nuke->path, nukee->name, nukee->ammount);
 
 	return nukee;
 }
@@ -447,78 +449,79 @@ int nuke_load_all() {
 		/* no error, file may not exist */
 		return 1;
 	}
-
+	
 	current=0;
 	next = buffer;
 	while(current<length) {
 		ptr = next;
-
+		
 		for(line=0;current+(line+1)<length;line++) {
 			if((ptr[line] == '\r') || (ptr[line] == '\n')) {
 				ptr[line] = 0;
 				break;
 			}
 		}
-
+		
 		current += (line+1);
 		next = ptr + (line+1);
-
-		if(!line)
+		
+		if(!line) {
 			continue;
-
+		}
+		
 		/* extract all infos from the file */
-
+		
 		what = ptr;
 		ptr = strchr(ptr, ';');
 		if(!ptr || !(*what)) continue;
 		*ptr = 0; ptr++;
-
+		
 		_path = ptr;
 		ptr = strchr(ptr, ';');
 		if(!ptr || !(*_path)) continue;
 		*ptr = 0; ptr++;
-
+		
 		if(!stricmp(what, "nuke")) {
-
+			
 			_multiplier = ptr;
 			ptr = strchr(ptr, ';');
 			if(!ptr || !(*_multiplier)) continue;
 			*ptr = 0; ptr++;
-
+			
 			_nuker = ptr;
 			ptr = strchr(ptr, ';');
 			if(!ptr || !(*_nuker)) continue;
 			*ptr = 0; ptr++;
-
+			
 			_reason = ptr;
 			ptr = strchr(ptr, ';');
 			if(!ptr || !(*_reason)) continue;
 			*ptr = 0; ptr++;
-
+			
 			_timestamp = ptr;
-
+			
 			nuke = nuke_new_from_path(_path, atoi(_multiplier), _nuker, _reason, _atoi64(_timestamp));
 			if(!nuke) {
 				NUKE_DBG("Failed to add nuke for path %s", _path);
 				continue;
 			}
-
+			
 		} else if(!stricmp(what, "nukee")) {
-
+			
 			_name = ptr;
 			ptr = strchr(ptr, ';');
 			if(!ptr || !(*_name)) continue;
 			*ptr = 0; ptr++;
-
+			
 			_ammount = ptr;
-
+			
 			nuke = nuke_get(_path);
 			if(!nuke) {
 				NUKE_DBG("Failed to get nuke for path %s, cannot add nukee (%s/%s)", _path, _name, _ammount);
 				continue;
 			}
-
-			if(!nukee_add(nuke, _name, _atoi64(_ammount))) {
+			
+			if(!nuke_new_nukee(nuke, _name, _atoi64(_ammount))) {
 				NUKE_DBG("Add nukee failed for (%s/%s) on %s", _name, _ammount, _path);
 				continue;
 			}

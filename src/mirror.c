@@ -584,7 +584,7 @@ static int mirror_lua_callback(struct mirror_ctx *mirror, int success, void *par
 	// success
 	lua_pushboolean(L, success);
 	// param
-	tolua_pushusertype(L, lua_ctx->param, "mirror_param");
+	tolua_pushnumber(L, lua_ctx->param);
 
 	err = lua_pcall(L, 3 /* param count */, 1, 0);
 	if(err) {
@@ -649,7 +649,7 @@ struct mirror_ctx *mirror_lua_new(
 	struct slave_connection *dest_cnx,
 	struct vfs_element *dest_file,
 	char *func_name,
-	void *param
+	unsigned int param
 ) {
 #ifdef NO_MIRRORS
 	MIRROR_DBG("Compiled without mirrors");

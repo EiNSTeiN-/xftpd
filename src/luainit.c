@@ -36,29 +36,103 @@
 #include <windows.h>
 
 #include "luainit.h"
+//#include "lua-5.1.1/src/lstate.h"
 
 lua_State* L = NULL;
 
 int luainit_init() {
+	LUALIB_API int luaopen_lsqlite3(lua_State *L);
 
+	LUAINIT_DBG("Loading ...");
+	
 	/* create lua instance */
 	L = lua_open();
-
+	if(!L) {
+		LUAINIT_DBG("Could not create lua state");
+		return 0;
+	}
+	
 	/* load lua libraries */
-	luaopen_base(L);
-	luaopen_string(L);
-	luaopen_table(L);
-	luaopen_math(L);
-	luaopen_io(L);
-	luaopen_debug(L);
+	luaL_openlibs(L);
+	luaopen_lsqlite3(L);
 
 	return 1;
 }
 
 void luainit_free() {
 
+	LUAINIT_DBG("Unloading ...");
+
 	/* destroy lua instance */
 	lua_close(L);
 
 	return;
 }
+
+int luainit_reload() {
+	LUALIB_API int luaopen_lsqlite3(lua_State *L);
+
+	LUAINIT_DBG("Reloading ...");
+	
+	/* destroy lua instance */
+	lua_close(L);
+	
+	/* create lua instance */
+	L = lua_open();
+	if(!L) {
+		LUAINIT_DBG("Could not create lua state");
+		return 0;
+	}
+	
+	/* load lua libraries */
+	luaL_openlibs(L);
+	luaopen_lsqlite3(L);
+	
+	return 1;
+}
+
+int luainit_garbagecollect() {
+	
+	//LUAINIT_DBG("luainit_garbagecollect (1): %u", (lua_gc(L, LUA_GCCOUNT, 0) * 1024) + lua_gc(L, LUA_GCCOUNTB, 0));
+	lua_gc(L, LUA_GCCOLLECT, 0);
+	//LUAINIT_DBG("luainit_garbagecollect (2): %u", (lua_gc(L, LUA_GCCOUNT, 0) * 1024) + lua_gc(L, LUA_GCCOUNTB, 0));
+	//lua_gc(L, LUA_GCCOLLECT, 0);
+	//LUAINIT_DBG("luainit_garbagecollect (3): %u", (lua_gc(L, LUA_GCCOUNT, 0) * 1024) + lua_gc(L, LUA_GCCOUNTB, 0));
+	
+	return 1;
+}
+/*
+unsigned int luainit_gcobjectcount(GCObject *gco) {
+	unsigned int count = 0;
+	GCObject *next;
+	
+	next = gco;
+	while(next) {
+		count++;
+		next = next->gch.next;
+	}
+	
+	return count;
+}
+
+int luainit_dumpstate(char *file) {
+	struct lua_State *dL = (struct lua_State *)L;
+	unsigned int i;
+	
+	logging_write(file, "dumping lua state ...\n");
+	logging_write(file, "openupval: %u\n", luainit_gcobjectcount(dL->openupval));
+	logging_write(file, "gclist: %u\n", luainit_gcobjectcount(dL->gclist));
+	
+	logging_write(file, "rootgc: %u\n", luainit_gcobjectcount(dL->l_G->rootgc));
+	logging_write(file, "gray: %u\n", luainit_gcobjectcount(dL->l_G->gray));
+	logging_write(file, "grayagain: %u\n", luainit_gcobjectcount(dL->l_G->grayagain));
+	logging_write(file, "weak: %u\n", luainit_gcobjectcount(dL->l_G->weak));
+	logging_write(file, "totalbytes: %u\n", dL->l_G->totalbytes);
+	logging_write(file, "estimate: %u\n", dL->l_G->estimate);
+	logging_write(file, "gcdept: %u\n", dL->l_G->gcdept);
+	logging_write(file, "size_ci: %u\n", dL->size_ci);
+	logging_write(file, "stacksize: %u\n", dL->stacksize);
+	
+	return 1;
+}
+*/

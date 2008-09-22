@@ -116,8 +116,6 @@ int event_register(char *name, char *function);
 
 int event_raise(char *name, unsigned int param_count, struct event_parameter *params);
 
-
-
 unsigned int event_onReload();
 
 /* user operations */
