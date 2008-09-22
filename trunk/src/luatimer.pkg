@@ -33,62 +33,24 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "ftpd.h"
-$#include "main.h"
+$#include "timer.h"
 
 typedef struct {
+	tolua_readonly collectible c @ collectible;
 	
-	unsigned long long int timestamp; /* start time */
-	unsigned int upload; /* 0 for download */
-
-	unsigned long long int xfered @ size;
-
-	/* reference to the vfs element we are operating on */
-	vfs_element *element @ file;
-	unsigned int checksum; /* checksum of the transfer. this is valid once
-							the transfer is complete for both upload & download */
-
-	/* reference the slave we are using for transfer */
-	slave_connection *cnx;
-} client_xfer;
-
-typedef struct {
-	collectible c @ collectible;
+	tolua_readonly config_file *volatile_config @ userdata;
 	
-	unsigned long long int timestamp;
+	tolua_readonly unsigned long long int timestamp; /* time of the last call */
+	tolua_readonly unsigned long long int timeout; /* timeout in milliseconds */
+} timer_ctx;
+
+module timer {
+	extern collection *timers @ all;
+
+	// delete all currently registrered timers
+	void timer_clear @ clear();
 	
-	config_file *volatile_config;
-
-	unsigned int logged;		/* true if the user is authenticated */
-	char username[32];			/* username used to authenticate */
-
-	user_ctx *user; /* associated user structure, NULL when the client is not logged */
-
-	vfs_element *working_directory;/* directory currently browsed by the user */
-} ftpd_client;
-
-module ftpd {
-	void main_reload @ reload();
-
-	/* recursively delete an element from the site. this is not
-		in the vfs module because it also delete the element and
-		all its contents from the slaves */
-	unsigned int ftpd_wipe @ wipe(vfs_element *element);
-	
-	unsigned int ftpd_wipe_from @ wipe_from(vfs_element *element, slave_ctx *slave);
+	//timer_ctx *timer_add @ add (char *function, unsigned long long int timeout, unsigned long long int start);
+	//bool timer_del @ delete (timer_ctx *);
 }
 
-module clients {
-	_collection *clients @ all;
-
-	//ftpd_client *collection_next @ iterate(_collection *c, unsigned int *iterator);
-	client_xfer *ftpd_lua_client_to_xfer @ get_xfer(ftpd_client *ctx);
-	const char *client_address @ address(ftpd_client *ctx);
-
-	void ftpd_client_destroy @ kick(ftpd_client *ctx);
-
-	unsigned int ftpd_lua_message @ msg(ftpd_client *ctx, const char *msg);
-
-	/* "flash" a directory to the client */
-	unsigned int ftpd_inject_listing @ flash(ftpd_client *ctx, unsigned int type, const char *name, const char *owner = "xFTPd");
-}

@@ -38,29 +38,17 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SLAVE
-#  define DEBUG_SLAVE_DIALOG
+#include "debug.h"
+#if defined(DEBUG_SLAVE)
+# define SLAVE_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
+#else
+# define SLAVE_DBG(format, arg...)
 #endif
 
-#ifdef DEBUG_SLAVE
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SLAVE_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SLAVE_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#if defined(DEBUG_SLAVE_DIALOG)
+# define SLAVE_DIALOG_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SLAVE_DBG(format, arg...)
-#endif
-
-#ifdef DEBUG_SLAVE_DIALOG
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SLAVE_DIALOG_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SLAVE_DIALOG_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
-#else
-#  define SLAVE_DIALOG_DBG(format, arg...)
+# define SLAVE_DIALOG_DBG(format, arg...)
 #endif
 
 #include "collection.h"

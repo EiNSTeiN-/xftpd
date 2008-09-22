@@ -33,7 +33,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#else
+#include <stdlib.h>
+#endif
+
 
 #include <stdint.h>
 #include <stdio.h>
@@ -67,7 +72,7 @@ static void signal_obj_destroy(struct signal_ctx *signal) {
 }
 
 static int signal_get_matcher(struct collection *c, struct signal_ctx *ctx, char *name) {
-	return !stricmp(ctx->name, name);
+	return !strcasecmp(ctx->name, name);
 }
 
 struct signal_ctx *signal_get(struct collection *signals, const char *name, int create) {
@@ -120,7 +125,7 @@ static void signal_callback_obj_destroy(struct signal_callback *s) {
 	return;
 }
 
-struct signal_callback *signal_add(struct collection *signals, struct collection *owner, char *name, int (*callback)(void *obj, void *param), void *param) {
+struct signal_callback *signal_add(struct collection *signals, struct collection *owner, const char *name, int (*callback)(void *obj, void *param), void *param) {
 	struct signal_callback *s;
 	struct signal_ctx *ctx;
 
@@ -254,7 +259,7 @@ static unsigned int signal_clear_with_filter_iterator(struct collection *group, 
 		void *obj;
 	} *ctx = param;
 
-	if(s->filter && (s->obj == ctx->obj) && !stricmp(s->ctx->name, ctx->name)) {
+	if(s->filter && (s->obj == ctx->obj) && !strcasecmp(s->ctx->name, ctx->name)) {
 		signal_del(group, s);
 	}
 

@@ -33,7 +33,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#else
+#include <stdlib.h>
+#endif
+
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -213,10 +218,10 @@ int proxy_connection_close(int fd, struct proxy_connection *cnx) {
 	proxy_cleanup_side(cnx, fd);
 
 	if(cnx->in.fd == -1 && cnx->out.fd == -1) {
-		PROXY_DBG("(at:%I64u) Second side closed.", time_now());
+		PROXY_DBG("(at:" LLU ") Second side closed.", time_now());
 		proxy_destroy(cnx);
 	} else {
-		PROXY_DBG("(at:%I64u) First side closed.", time_now());
+		PROXY_DBG("(at:" LLU ") First side closed.", time_now());
 	}
 
 	return 1;
@@ -550,6 +555,7 @@ int proxy_listening_close(int fd, unsigned int *listening) {
 	return 1;
 }
 
+#ifdef WIN32
 void set_current_path() {
 	char full_path[MAX_PATH];
 	char *ptr;
@@ -564,6 +570,7 @@ void set_current_path() {
 
 	return;
 }
+#endif
 
 #ifdef PROXY_WIN32_SERVICE
 int win32_service_main() {
@@ -577,10 +584,13 @@ int main(int argc, char* argv[]) {
 
 	PROXY_DBG("Loading ...");
 
+#ifdef WIN32
 	set_current_path();
 
 #ifdef PROXY_SILENT_CRASH
 	SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+#endif
+
 #endif
 
 	socket_init();
@@ -645,14 +655,14 @@ int main(int argc, char* argv[]) {
 	socket_monitor_signal_add(listen_fd, listen_signals, "socket-close", (signal_f)proxy_listening_close, &listening);
 
 	while(listening) {
-
+		
 		//signal_poll();
-
+		
 		socket_poll();
 		
-		collection_cleanup_iterators();
-
-		Sleep(PROXY_SLEEP_TIME);
+//		collection_cleanup_iterators();
+		
+		sleep(PROXY_SLEEP_TIME);
 	}
 
 	PROXY_DBG("Proxy's main loop exited");
@@ -684,12 +694,11 @@ int main(int argc, char* argv[]) {
 	char *desc;
 
 	set_current_path();
-
+  
 	name = config_raw_read(PROXY_CONFIG_FILE, "proxy.service.name", "xFTPd-proxy");
 	displayname = config_raw_read(PROXY_CONFIG_FILE, "proxy.service.displayname", "xFTPd-proxy");
 	desc = config_raw_read(PROXY_CONFIG_FILE, "proxy.service.description", "xFTPd-proxy");
-
-	// if we're a service, it means someone *else* will get the result
+  
 	if(service_start_and_call(name, displayname, desc, (func)&win32_service_main)) {
 		return 1;
 	}

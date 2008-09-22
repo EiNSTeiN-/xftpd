@@ -36,40 +36,83 @@
 #ifndef __SOCKET_H
 #define __SOCKET_H
 
+#ifdef WIN32
+#include <winsock2.h>
+#include <windows.h>
+#else
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+//#include <poll.h>
+#endif
+
+#include "compat.h"
 #include "constants.h"
 #include "signal.h"
 #include "obj.h"
 #include "collection.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SOCKET
-//#  define DEBUG_SOCKET_SIGNALS
-#endif
-
-#ifdef DEBUG_SOCKET
-# include "logging.h"
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SOCKET_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SOCKET_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_SOCKET)
+# define SOCKET_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SOCKET_DBG(format, arg...)
+# define SOCKET_DBG(format, arg...)
 #endif
 
-#ifdef DEBUG_SOCKET_SIGNALS
-# include "logging.h"
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SOCKET_SIGNALS_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SOCKET_SIGNALS_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#if defined(DEBUG_SOCKET_SIGNALS)
+# define SOCKET_SIGNALS_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SOCKET_SIGNALS_DBG(format, arg...)
+# define SOCKET_SIGNALS_DBG(format, arg...)
 #endif
 
-#include <windows.h>
-#include <winsock.h>
+#ifdef WIN32
+
+# define EWOULDBLOCK WSAEWOULDBLOCK
+
+typedef struct pollfd {
+    int fd;
+    short events;
+    short revents;
+} pollfd_t;
+
+#define   POLLIN      0x0001
+#define   POLLPRI      0x0002
+#define   POLLOUT      0x0004
+#define   POLLRDNORM   0x0040
+#define   POLLWRNORM   POLLOUT
+#define   POLLRDBAND   0x0080
+#define   POLLWRBAND   0x0100
+#define   POLLNORM   POLLRDNORM
+
+/* Return ONLY events (NON testable) */
+
+#define   POLLERR      0x0008
+#define   POLLHUP      0x0010
+#define   POLLNVAL   0x0020
+
+int poll(struct pollfd fds[], unsigned int nfds, int timeout); 
+
+#else
+
+# define WSAGetLastError() errno
+# define INVALID_SOCKET -1
+# define SOCKET_ERROR -1
+# define closesocket close
+
+#define SD_READ SHUT_RD
+#define SD_SEND SHUT_WR
+#define SD_BOTH SHUT_RDWR
+
+#endif
 
 extern unsigned long long int socket_current;
 
@@ -95,7 +138,7 @@ struct socket_monitor {
 
 	/*
 		Signal that the socket has faulted, or has died on purpose (connection closed).
-		This should not happens, since the application should monitor the CLOSE event
+		This should not happen, since the application should monitor the CLOSE event
 		and then call socket_monitor_fd_closed() but this is here so we don't
 		poison the other sockets with invalid ones.
 	*/
@@ -103,12 +146,25 @@ struct socket_monitor {
 
 	struct collection *signals;
 
-	/* to avoid looking them up every times. */
+	/* cached pointers to avoid looking them up every time. */
 	struct signal_ctx *connect_signal;
 	struct signal_ctx *read_signal;
 	struct signal_ctx *write_signal;
 	struct signal_ctx *close_signal;
 	struct signal_ctx *error_signal;
+} __attribute__((packed));
+
+/*
+   Structure used to transfer IP addresses in the right order.
+   Access each element individually for portability.
+   c1.c2.c3.c4
+*/
+typedef struct ipaddress ipaddress;
+struct ipaddress {
+	unsigned char c4;
+	unsigned char c3;
+	unsigned char c2;
+	unsigned char c1;
 } __attribute__((packed));
 
 int socket_init();
@@ -133,9 +189,11 @@ int socket_linger(int fd, unsigned short timeout);
 unsigned int socket_split_addr(const char *addr, char **host, unsigned short *port);
 unsigned int socket_peer_address(int s);
 unsigned int socket_local_address(int s);
-const char *socket_formated_peer_address(int s);
+ipaddress socket_ipaddress(int s);
 unsigned int socket_addr(const char *hostname);
+const char *socket_ntoa(int s);
 
+ipaddress mkipaddress(char c1, char c2, char c3, char c4);
 
 /*
 	Register a socket to be monitored.

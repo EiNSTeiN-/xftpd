@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
 #include <time.h>
 #include <fcntl.h>
@@ -53,11 +56,10 @@
 #include "scripts.h"
 #include "irccore.h"
 #include "users.h"
-#include "timeout.h"
+#include "timer.h"
 #include "mirror.h"
 #include "site.h"
 #include "time.h"
-#include "timeout.h"
 #include "signal.h"
 #include "stats.h"
 #include "site.h"
@@ -65,11 +67,12 @@
 #include "service.h"
 #include "slaveselection.h"
 #include "secure.h"
+#include "skins.h"
 
 
 unsigned long long int init_time = 0;
 unsigned long long int startup_time = 0;
-unsigned long long int main_cycle_time = 0;
+//unsigned long long int main_cycle_time = 0;
 
 struct main_ctx main_ctx;
 
@@ -89,6 +92,7 @@ void main_reload() {
 	return;
 }
 
+#ifdef WIN32
 void set_current_path() {
 	char full_path[MAX_PATH];
 	char *ptr;
@@ -103,25 +107,20 @@ void set_current_path() {
 
 	return;
 }
+#endif
 
 #ifdef MASTER_WIN32_SERVICE
 int win32_service_main() {
 #else
 int main(int argc, char* argv[]) {
 #endif
-	unsigned long long int time;
+//	unsigned long long int time;
 
 	MAIN_DBG("Loading ...");
 
-#ifdef FTPD_STOP_WORKING_TIMESTAMP
-	//MAIN_DBG("Now: %I64u. Stop: %I64u.", (time_now() / 1000), FTPD_STOP_WORKING_TIMESTAMP);
-	if((time_now() / 1000) > FTPD_STOP_WORKING_TIMESTAMP) {
-		MAIN_DBG("This version of xFTPd is no longer up to date.");
-		MAIN_DBG("Please visit www.xftpd.com to get a new version.");
-	}
-#endif
-
+#ifdef WIN32
 	set_current_path();
+#endif
 
 #ifdef MASTER_SILENT_CRASH
 	SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
@@ -160,6 +159,11 @@ int main(int argc, char* argv[]) {
 		MAIN_DBG("Could not initialize \"ftpd\" module");
 		return 1;
 	}
+	if(!nuke_init()) {
+		MAIN_DBG("Could not initialize \"nuke\" module");
+		return 1;
+	}
+	
 	if(!events_init()) {
 		MAIN_DBG("Could not initialize \"event\" module");
 		return 1;
@@ -168,8 +172,8 @@ int main(int argc, char* argv[]) {
 		MAIN_DBG("Could not initialize \"event\" module");
 		return 1;
 	}
-	if(!timeout_init()) {
-		MAIN_DBG("Could not initialize \"timeout\" module");
+	if(!timer_init()) {
+		MAIN_DBG("Could not initialize \"timer\" module");
 		return 1;
 	}
 	if(!mirror_init()) {
@@ -180,41 +184,40 @@ int main(int argc, char* argv[]) {
 		MAIN_DBG("Could not initialize \"site\" module");
 		return 1;
 	}
-	if(!nuke_init()) {
-		MAIN_DBG("Could not initialize \"nuke\" module");
-		return 1;
-	}
-
-	if(!luainit_init()) {
-		MAIN_DBG("Could not initialize \"lua\" module");
-		return 1;
-	}
 	if(!irccore_init()) {
 		MAIN_DBG("Could not initialize \"irccore\" module");
 		return 1;
 	}
+	
+	/*if(!luainit_init()) {
+		MAIN_DBG("Could not initialize \"lua\" module");
+		return 1;
+	}*/
 	if(!scripts_init()) {
 		MAIN_DBG("Could not initialize \"scripts\" module");
 		return 1;
 	}
-
+	if(!skins_init()) {
+		MAIN_DBG("Could not initialize \"skins\" module");
+		return 1;
+	}
+	
 	init_time = timer(init_time);
 	startup_time = time_now();
 	
-	MAIN_DBG("Initialization completed in %I64u miliseconds", init_time);
-
-
+	MAIN_DBG("Initialization completed in " LLU " miliseconds", init_time);
+	
 	/*
 		Core loop of the ftpd.
 		This is where the magic happens.
 	*/
 	do {
 		
-		time = time_now();
+		//time = time_now();
 		
 		probe_stats();
 		
-		timeout_poll();
+		timer_poll();
 		
 		socket_poll();
 		
@@ -224,11 +227,7 @@ int main(int argc, char* argv[]) {
 		
 		config_poll();
 		
-		collection_cleanup_iterators();
-		
-		luainit_garbagecollect();
-		
-		Sleep(MASTER_SLEEP_TIME);
+		sleep(MASTER_SLEEP_TIME);
 		
 		if(obj_balance) {
 			MAIN_DBG("WARNING!!! Object dereferencing is not balanced!");
@@ -256,20 +255,22 @@ int main(int argc, char* argv[]) {
 				return 0;
 			}
 			
-			/* clean all timeouts */
-			timeout_clear();
+			/* clean all timers */
+			timer_clear();
 			
 			/* clean all events */
 			events_clear();
 			
 			/* make a brand new lua context. */
-			if(!luainit_reload()) {
+			/*if(!luainit_reload()) {
 				MAIN_DBG("Could not reload \"lua\" module");
 				return 0;
-			}
+			}*/
+			
+			skins_reload();
 			
 			/* reload all scripts */
-			scripts_loadall();
+			scripts_reload();
 			
 			nuke_reload();
 			
@@ -280,20 +281,21 @@ int main(int argc, char* argv[]) {
 			main_ctx.reload = 0;
 		}
 		
-		main_cycle_time = timer(time);
+		//main_cycle_time = timer(time);
 		
 	} while(main_ctx.living);
 	
-	MAIN_DBG("Main loop exited. Runtime: %I64u miliseconds", timer(startup_time));
+	MAIN_DBG("Main loop exited. Runtime: " LLU " miliseconds", timer(startup_time));
 	
+	skins_free();
 	scripts_free();
 	irccore_free();
-	luainit_free();
+	//luainit_free();
 	
 	nuke_free();
 	site_free();
 	mirror_free();
-	timeout_free();
+	timer_free();
 	slaveselection_free();
 	events_free();
 	ftpd_free();

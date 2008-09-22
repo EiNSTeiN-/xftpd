@@ -33,11 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
 
-#include "lualib.h"
-#include "lauxlib.h"
-#include "tolua.h"
 
 #include "constants.h"
 #include "collection.h"
@@ -45,157 +44,247 @@
 #include "config.h"
 #include "scripts.h"
 #include "luainit.h"
+#include "asprintf.h"
+#include "dir.h"
 
-/* lua seems to not be able to compare pointers on its own ... */
-int equals(void *a, void *b) {
+struct collection *scripts;
 
-	return (a == b);
+int scripts_loadall() {
+	char *scripts;
+	
+	scripts = config_raw_read(MASTER_CONFIG_FILE, "xftpd.scripts.path", NULL);
+	
+	if(!scripts) {
+		SCRIPTS_DBG("xftpd.scripts.path is not set in "MASTER_CONFIG_FILE"... Using default " SCRIPTS_PATH);
+		scripts_load_directory(SCRIPTS_PATH);
+	} else {
+		scripts_load_directory(scripts);
+		free(scripts);
+		scripts = NULL;
+	}
+  
+	return 1;
 }
 
 int scripts_init() {
 
 	SCRIPTS_DBG("Loading ...");
-
-	scripts_loadall();
-
-	return 1;
-}
-
-unsigned int scripts_loadall() {
-	int tolua_xFTPd_bind_open(lua_State*);
-	char buffer[128];
-	unsigned int i;
-	char *file;
-	const char *errmsg;
-	char *errval;
-	unsigned int err;
-
-	/* bind exported xFTPd's lua functions */
-	tolua_xFTPd_bind_open(L);
-
-	/* load all sections */
-	for(i=1;;i++) {
-		/* get the file name */
-		sprintf(buffer, "xftpd.script(%u).file", i);
-		file = config_raw_read(MASTER_CONFIG_FILE, buffer, NULL);
-		if(!file) break;
-		
-		/* load the file as a lua function on top of the stack */
-		err = luaL_loadfile(L, file);
-		if(err) {
-			SCRIPTS_DBG("Could not load file %s", file);
-			
-			if(err == LUA_ERRSYNTAX) errval = "syntax error during pre-compilation";
-			else if(err == LUA_ERRMEM) errval = "memory allocation error";
-			else if(err == LUA_ERRFILE) errval = "cannot open/read the file";
-			else errval = "unknown error";
-			
-			errmsg = lua_tostring(L, -1);
-			
-			SCRIPTS_DBG("error catched:");
-			SCRIPTS_DBG("  --> while loading: %s", file);
-			SCRIPTS_DBG("  --> error value: %s", errval);
-			SCRIPTS_DBG("  --> error message: %s", errmsg);
-			
-			/* pop the error message */
-			lua_pop(L, 1);
-			
-			free(file);
-			continue;
-		}
-		
-		err = lua_pcall(L, 0 /* no args */, 0 /* no ret values */, 0);
-		if(err) {
-			/*
-			LUA_ERRRUN --- a runtime error. 
-			LUA_ERRMEM --- memory allocation error. For such errors, Lua does not call the error handler function. 
-			LUA_ERRERR --- error while running the error handler function. 
-			*/
-			if(err == LUA_ERRRUN) errval = "runtime error";
-			else if(err == LUA_ERRMEM) errval = "memory allocation error";
-			else if(err == LUA_ERRERR) errval = "error while running the error handler function";
-			else errval = "unknown error";
-			
-			errmsg = lua_tostring(L, -1);
-			
-			SCRIPTS_DBG("error catched:");
-			SCRIPTS_DBG("  --> while executing: %s", file);
-			SCRIPTS_DBG("  --> error value: %s", errval);
-			SCRIPTS_DBG("  --> error message: %s", errmsg);
-			
-			/* pop the error message */
-			lua_pop(L, 1);
-			
-			free(file);
-			continue;
-		}
-		
-		/* call the init() function of this script */
-		lua_pushstring(L, "init");
-		lua_gettable(L, LUA_GLOBALSINDEX);
-		if(!lua_isfunction(L, -1)) {
-			SCRIPTS_DBG("%s have no init() function", file);
-			lua_pop(L, 1);
-			free(file);
-			continue;
-		}
-		
-		err = lua_pcall(L, 0, 1, 0);
-		if(err) {
-			/*
-			LUA_ERRRUN --- a runtime error. 
-			LUA_ERRMEM --- memory allocation error. For such errors, Lua does not call the error handler function. 
-			LUA_ERRERR --- error while running the error handler function. 
-			*/
-			if(err == LUA_ERRRUN) errval = "runtime error";
-			else if(err == LUA_ERRMEM) errval = "memory allocation error";
-			else if(err == LUA_ERRERR) errval = "error while running the error handler function";
-			else errval = "unknown error";
-
-			errmsg = lua_tostring(L, -1);
-
-			SCRIPTS_DBG("error catched:");
-			SCRIPTS_DBG("  --> function: init() of %s", file);
-			SCRIPTS_DBG("  --> error value: %s", errval);
-			SCRIPTS_DBG("  --> error message: %s", errmsg);
-		} else {
-			if(!lua_isnumber(L, -1))
-				SCRIPTS_DBG("%s returned non-number type.", file);
-			else {
-				lua_Number n;
-				n = lua_tonumber(L, -1);
-				if(!(int)n) {
-					SCRIPTS_DBG("%s failed to initialize itself.", file);
-				} else {
-					//SCRIPTS_DBG("%s successfully loaded.", file);
-				}
-			}
-		}
-		lua_pop(L, 1); /* pops the return value or the error */
-		
-		/* zeroes out the init() so we won't ever call it again */
-		/* t=_G, k="init", v=nil */
-		lua_pushvalue(L, LUA_GLOBALSINDEX);	// stack: t
-		lua_pushstring(L, "init");			// stack: t k
-		lua_pushnil(L);						// stack: t k v
-		lua_rawset(L, -3);  				// t[k] = v
-		
-		/* temp check */
-		lua_pushstring(L, "init");
-		lua_gettable(L, LUA_GLOBALSINDEX);
-		if(lua_isfunction(L, -1)) {
-			SCRIPTS_DBG("init() function of %s wasn't zeroed", file);
-		}
-
-		free(file);
+	
+	scripts = collection_new(C_CASCADE);
+	if(!scripts) {
+	  SCRIPTS_DBG("Memory error.");
+	  return 0;
 	}
+	
+	scripts_loadall();
+	
+	return 1;
+}
 
-	/*if(lua_gcmonitor()) {
-		SCRIPTS_DBG("%u Kbytes for LUA with %u threshold.", current_gc_count, current_gc_threshold);
-	}*/
+int scripts_reload() {
+
+	SCRIPTS_DBG("Reloading ...");
+	
+	scripts_loadall();
+	
+	return 1;
+}
+
+int script_resolve_matcher(struct collection *c, struct script_ctx *script, lua_State *L)
+{
+	return (script->L == L);
+}
+
+struct script_ctx *script_resolve(lua_State *L)
+{
+  
+  return (struct script_ctx *)collection_match(scripts, (collection_f)script_resolve_matcher, L);
+}
+
+static void script_obj_destroy(struct script_ctx *script)
+{
+
+  collection_destroy(script->events);
+  script->events = NULL;
+
+  free(script->filename);
+
+  luainit_freestate(script->L);
+  script->L = NULL;
+  
+  free(script);
+
+  return;
+}
+
+int scripts_load_file(const char *filename) {
+	struct script_ctx *script;
+	
+	SCRIPTS_DBG("Loading %s", filename);
+	
+	script = malloc(sizeof(struct script_ctx));
+	if(!script) {
+	  SCRIPTS_DBG("Memory error");
+	  return 0;
+	}
+	
+	obj_init(&script->o, script, (obj_f)script_obj_destroy);
+	collectible_init(script);
+	
+	script->filename = strdup(filename);
+	if(!script->filename) {
+		SCRIPTS_DBG("Memory error");
+		free(script);
+		return 0;
+	}
+	
+	script->events = collection_new(C_CASCADE);
+	if(!script->events) {
+		SCRIPTS_DBG("Memory error");
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	script->irchandlers = collection_new(C_CASCADE);
+	if(!script->irchandlers) {
+		SCRIPTS_DBG("Memory error");
+		collection_destroy(script->events);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	script->mirrors = collection_new(C_CASCADE);
+	if(!script->mirrors) {
+		SCRIPTS_DBG("Memory error");
+		collection_destroy(script->events);
+		collection_destroy(script->irchandlers);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	script->sitehandlers = collection_new(C_CASCADE);
+	if(!script->sitehandlers) {
+		SCRIPTS_DBG("Memory error");
+		collection_destroy(script->events);
+		collection_destroy(script->irchandlers);
+		collection_destroy(script->mirrors);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	script->timers = collection_new(C_CASCADE);
+	if(!script->timers) {
+		SCRIPTS_DBG("Memory error");
+		collection_destroy(script->events);
+		collection_destroy(script->irchandlers);
+		collection_destroy(script->mirrors);
+		collection_destroy(script->sitehandlers);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	script->L = luainit_newstate();
+	if(!script->L) {
+		SCRIPTS_DBG("Could not create lua state for %s", script->filename);
+		collection_destroy(script->events);
+		collection_destroy(script->irchandlers);
+		collection_destroy(script->mirrors);
+		collection_destroy(script->sitehandlers);
+		collection_destroy(script->timers);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	if(!luainit_loadfile(script->L, script->filename)) {
+		SCRIPTS_DBG("Could not load file %s", script->filename);
+		luainit_freestate(script->L);
+		collection_destroy(script->events);
+		collection_destroy(script->irchandlers);
+		collection_destroy(script->mirrors);
+		collection_destroy(script->sitehandlers);
+		collection_destroy(script->timers);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	if(!collection_add(scripts, script)) {
+		luainit_freestate(script->L);
+		collection_destroy(script->events);
+		collection_destroy(script->irchandlers);
+		collection_destroy(script->mirrors);
+		collection_destroy(script->sitehandlers);
+		collection_destroy(script->timers);
+		free(script->filename);
+		free(script);
+		return 0;
+	}
+	
+	if(!luainit_call(script->L, "init"))
+		SCRIPTS_DBG("Couldn't call init() on %s", script->filename);
+  
+	return 1;
+}
+
+#define ENDSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strcasecmp(&a[strlen(a)-strlen(b)], b))
+  
+int scripts_load_directory(const char *directory)
+{
+	struct dir_ctx *dir;
+	char *path;
+
+	path = dir_fullpath(directory);
+	if(!path) {
+		SCRIPTS_DBG("Can't resolve %s", path);
+	  return 0;
+	}
+	
+	dir = dir_open(path, "*");
+	if(!dir) {
+		SCRIPTS_DBG("Couldn't open \"%s\"", path);
+	} else {
+		do {
+			char *searchpath;
+			
+			if(!strcmp(dir_name(dir), ".") || !strcmp(dir_name(dir), "..")) continue;
+			
+			if(dir_attrib(dir) & DIR_SUBDIR) {
+				searchpath = bprintf("%s/%s", path,  dir_name(dir));
+				if(!searchpath)
+					continue;
+				
+				scripts_load_directory(searchpath);
+				
+				free(searchpath);
+				searchpath = NULL;
+			} else {
+				if(!ENDSWITH(dir_name(dir), ".lua")) continue;
+				
+				searchpath = bprintf("%s/%s", path,  dir_name(dir));
+				if(!searchpath)
+					continue;
+				
+				scripts_load_file(searchpath);
+				
+				free(searchpath);
+				searchpath = NULL;
+			}
+		} while(dir_next(dir));
+		dir_close(dir);
+	}
+	free(path);
 
 	return 1;
 }
+
+#undef ENDSWITH
 
 void scripts_free() {
 

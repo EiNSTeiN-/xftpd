@@ -33,7 +33,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#else
+#include <stdlib.h>
+#include <string.h>
+#endif
 
 #include <openssl/rsa.h>
 #include <openssl/sha.h>
@@ -56,14 +61,14 @@ void crypto_free() {
 	return;
 }
 
-unsigned int crypto_rand(char *buffer, unsigned int size) {
+unsigned int crypto_rand(unsigned char *buffer, unsigned int size) {
 	return RAND_bytes(buffer, size);
 }
 
 char *crypto_keyhash(struct keypair *k) {
 	unsigned char digest[SHA_DIGEST_LENGTH];
 	unsigned int len;
-	char *buffer;
+	unsigned char *buffer;
 
 	buffer = crypto_export_keypair(k, 0, &len);
 	if(buffer == NULL) {
@@ -104,15 +109,15 @@ unsigned int crypto_generate_keypair(struct keypair *k, unsigned int bits) {
 	return 1;
 }
 
-unsigned int crypto_BN_export(BIGNUM *num, char *buffer, unsigned int len) {
+unsigned int crypto_BN_export(BIGNUM *num, unsigned char *buffer, unsigned int len) {
 	memcpy(&buffer[0], &len, 4);
 	return BN_bn2bin(num, &buffer[4]);
 }
 
-char *crypto_export_keypair(struct keypair *k, unsigned int export_priv, unsigned int *export_length) {
+unsigned char *crypto_export_keypair(struct keypair *k, unsigned int export_priv, unsigned int *export_length) {
 	//char *n, *e, *d, *p, *q, *dmp1, *dmq1, *iqmp;
 	unsigned int n_len, e_len, d_len=0, p_len=0, q_len=0, dmp1_len=0, dmq1_len=0, iqmp_len=0;
-	char *buffer;
+	unsigned char *buffer;
 
 	if(export_priv && !k->priv_present) {
 		CRYPTO_DBG("Cannot export private because it is not present");
@@ -188,7 +193,7 @@ char *crypto_export_keypair(struct keypair *k, unsigned int export_priv, unsigne
 	return buffer;
 }
 
-unsigned int crypto_import_keypair(struct keypair *k, unsigned int import_priv, char *data, unsigned int data_length) {
+unsigned int crypto_import_keypair(struct keypair *k, unsigned int import_priv, unsigned char *data, unsigned int data_length) {
 	unsigned int num_len;
 
 	if(import_priv && !k->priv_present) {
@@ -322,9 +327,9 @@ unsigned int crypto_import_keypair(struct keypair *k, unsigned int import_priv, 
 	return 1;
 }
 
-char *crypto_sha1_sign_data(struct keypair *k, char *data, unsigned int data_length, unsigned int *sign_length) {
-	char digest[SHA_DIGEST_LENGTH];
-	char *sign;
+unsigned char *crypto_sha1_sign_data(struct keypair *k, unsigned char *data, unsigned int data_length, unsigned int *sign_length) {
+	unsigned char digest[SHA_DIGEST_LENGTH];
+	unsigned char *sign;
 
 	(*sign_length) = 0;
 
@@ -353,8 +358,8 @@ char *crypto_sha1_sign_data(struct keypair *k, char *data, unsigned int data_len
 	return sign;
 }
 
-unsigned int crypto_sha1_verify_sign(struct keypair *k, char *data, unsigned int data_length, char *sign, unsigned int sign_length) {
-	char digest[SHA_DIGEST_LENGTH];
+unsigned int crypto_sha1_verify_sign(struct keypair *k, unsigned char *data, unsigned int data_length, unsigned char *sign, unsigned int sign_length) {
+	unsigned char digest[SHA_DIGEST_LENGTH];
 	
 	/* make a sha1 digest of the data */
 	SHA1(data, data_length, digest);
@@ -379,8 +384,8 @@ unsigned int crypto_max_public_encryption_length(struct keypair *k) {
 }
 
 /* must be used to encrypt the cipher key */
-char *crypto_public_encrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *encrypted_size) {
-	char *encrypted;
+unsigned char *crypto_public_encrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *encrypted_size) {
+	unsigned char *encrypted;
 
 	(*encrypted_size) = 0;
 
@@ -403,8 +408,8 @@ char *crypto_public_encrypt(struct keypair *k, void *data, unsigned int data_len
 }
 
 /* must be used to decrypt data encrypted with crypto_public_encrypt() */
-char *crypto_private_decrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *decrypted_size) {
-	char *decrypted;
+unsigned char *crypto_private_decrypt(struct keypair *k, void *data, unsigned int data_length, unsigned int *decrypted_size) {
+	unsigned char *decrypted;
 
 	(*decrypted_size) = 0;
 
@@ -428,16 +433,16 @@ char *crypto_private_decrypt(struct keypair *k, void *data, unsigned int data_le
 	return decrypted;
 }
 
-unsigned int crypto_set_cipher_key(BF_KEY *schedule, char *buffer, unsigned int length) {
+unsigned int crypto_set_cipher_key(BF_KEY *schedule, unsigned char *buffer, unsigned int length) {
 
 	BF_set_key(schedule, length, buffer);
 
 	return 1;
 }
 
-char *crypto_cipher_encrypt(BF_KEY *schedule, void *data, unsigned int data_length, unsigned int *retsize, int enc) {
+unsigned char *crypto_cipher_encrypt(BF_KEY *schedule, void *data, unsigned int data_length, unsigned int *retsize, int enc) {
 	unsigned char *buffer;
-	unsigned int num = 0;
+	int num = 0;
 
 	/* 64 bits initialization vector: must be the same on client side */
 	unsigned long long int ivec = 0xdeadbeefbaadf00dLL;

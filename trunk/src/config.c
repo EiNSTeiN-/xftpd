@@ -33,22 +33,28 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
-#include <stdio.h>
 #include <io.h>
+#else
+#include <stdlib.h>
+#include <string.h>
+#endif
+
+#include <stdio.h>
 
 #include "config.h"
+#include "main.h"
 #include "logging.h"
 #include "collection.h"
 #include "time.h"
 #include "crc32.h"
 #include "asprintf.h"
+#include "adio.h"
 
-static struct collection *open_configs = NULL;
+struct collection *open_configs = NULL;
 
-static char *config_lua_buffer = NULL;
-
-/* TODO: use that and parse manualy instead of fgets() */
+/* TODO: use that and parse manualy instead of fgets() in functions below */
 char *config_load_file(const char *filename, unsigned int *length)
 {
 	char *buffer;
@@ -93,18 +99,6 @@ char *config_load_file(const char *filename, unsigned int *length)
 	return buffer;
 }
 
-char *config_lua_load_file(const char *filename, unsigned int *length) {
-
-	if(config_lua_buffer) {
-		free(config_lua_buffer);
-		config_lua_buffer = NULL;
-	}
-
-	config_lua_buffer = config_load_file(filename, length);
-
-	return config_lua_buffer;
-}
-
 /* return the parameter's value from the ini, or the default value on error */
 char *config_raw_read(const char *filename, const char *param, const char *default_value) {
 	char buffer[1024], *ptr;
@@ -139,7 +133,7 @@ char *config_raw_read(const char *filename, const char *param, const char *defau
 		}
 
 		/* parse the line */
-		if(!strnicmp(buffer, param, strlen(param))) {
+		if(!strncasecmp(buffer, param, strlen(param))) {
 			ptr = &buffer[strlen(param)];
 
 			/* trim white spaces before the equal sign */
@@ -166,18 +160,6 @@ char *config_raw_read(const char *filename, const char *param, const char *defau
 	fclose(f);
 
 	return default_value ? strdup(default_value) : NULL;
-}
-
-char *config_raw_lua_read(const char *filename, const char *param, const char *default_value) {
-
-	if(config_lua_buffer) {
-		free(config_lua_buffer);
-		config_lua_buffer = NULL;
-	}
-
-	config_lua_buffer = config_raw_read(filename, param, default_value);
-
-	return config_lua_buffer;
 }
 
 unsigned long long int config_raw_read_int(const char *filename, const char *param, unsigned long long int default_value) {
@@ -207,6 +189,7 @@ unsigned long long int config_raw_read_int(const char *filename, const char *par
 
 	/* translate the number */
 	i = _atoi64(value);
+
 	free(value);
 
 	return i;
@@ -264,7 +247,7 @@ int config_raw_write(const char *filename, const char *param, const char *new_va
 		}
 
 		/* parse the line */
-		if(!strnicmp(buffer, param, strlen(param)) && ((buffer[strlen(param)] == ' ') || (buffer[strlen(param)] == '='))) {
+		if(!strncasecmp(buffer, param, strlen(param)) && ((buffer[strlen(param)] == ' ') || (buffer[strlen(param)] == '='))) {
 
 			replaced = 1;
 
@@ -345,7 +328,7 @@ int config_raw_write_int(const char *filename, const char *param, unsigned long 
 		}
 
 		/* parse the line */
-		if(!strnicmp(buffer, param, strlen(param)) && ((buffer[strlen(param)] == ' ') || (buffer[strlen(param)] == '='))) {
+		if(!strncasecmp(buffer, param, strlen(param)) && ((buffer[strlen(param)] == ' ') || (buffer[strlen(param)] == '='))) {
 
 			replaced = 1;
 
@@ -372,6 +355,7 @@ int config_raw_write_int(const char *filename, const char *param, unsigned long 
 	return 1;
 }
 
+/* called upon destruction of a config_file structure */
 static void config_obj_destroy(struct config_file *config) {
 	
 	collectible_destroy(config);
@@ -385,70 +369,26 @@ static void config_obj_destroy(struct config_file *config) {
 	return;
 }
 
-
-/* Initialize the config structure without loading the file */
-struct config_file *config_new(const char *filename, unsigned long long int timeout) {
-	struct config_file *config;
-	
-	/*if(!filename) {
-		CONFIG_DBG("Params error");
-		return 0;
-	}*/
-
-	if(!open_configs) {
-		open_configs = collection_new(C_CASCADE);
-	}
-
-	config = malloc(sizeof(struct config_file));
-	if(!config) {
-		CONFIG_DBG("Memory error");
-		return NULL;
-	}
-	
-	obj_init(&config->o, config, (obj_f)config_obj_destroy);
-	collectible_init(config);
-	
-	if(filename) {
-		config->filename = strdup(filename);
-		if(!config->filename) {
-			CONFIG_DBG("Memory error");
-			free(config);
-			return NULL;
-		}
-	} else {
-		config->filename = NULL;
-	}
-
-	config->timeout = timeout;
-	config->savetime = time_now();
-
-	config->modified = 0;
-	config->loaded = 0;
-
-	config->fields = collection_new(C_CASCADE);
-
-	if(!collection_add(open_configs, config)) {
-		if(config->filename) {
-			free(config->filename);
-		}
-		collection_destroy(config->fields);
-		free(config);
-		return NULL;
-	}
-
-	return config;
-}
-
 /* Destroy a config structure, discarding any unsaved changes */
-void config_destroy(struct config_file *config) {
-
+void config_close(struct config_file *config) {
+	
 	if(!config) {
 		CONFIG_DBG("Params error");
 		return;
 	}
-
-	obj_destroy(&config->o);
-
+	
+	config->refs--;
+	if(config->refs)
+		return;
+	else {
+		/* save the file if needed. */
+		if(config->shouldsave) {
+			config_save(config);
+		} else {
+			obj_destroy(&config->o);
+		}
+	}
+	
 	return;
 }
 
@@ -459,7 +399,7 @@ static int config_get_field_matcher(struct collection *c, struct config_field *f
 	} *ctx = param;
 
 	if(field->namesum == ctx->namesum) {
-		return !stricmp(ctx->name, field->name);
+		return !strcasecmp(ctx->name, field->name);
 	}
 
 	return 0;
@@ -506,7 +446,8 @@ static struct config_field *config_new_field(struct config_file *config, const c
 	obj_init(&field->o, field, (obj_f)config_field_obj_destroy);
 	collectible_init(field);
 
-	field->modified = 0;
+	field->comments = NULL;
+	
 	field->namesum = namesum;
 	
 	field->name = strdup(name);
@@ -534,13 +475,13 @@ static struct config_field *config_new_field(struct config_file *config, const c
 
 	return field;
 }
-#define IS_MAJ(_c) (((_c) >= 'A') && ((_c) <= 'Z'))
 
 /*
 	The name sum is calculated without the ending zero for more
 	flexibility (less string movement)
 */
 unsigned int config_namesum(const char *name, unsigned int length) {
+#define IS_MAJ(_c) (((_c) >= 'A') && ((_c) <= 'Z'))
 	unsigned int i;
 	unsigned int sum;
 	unsigned char m;
@@ -557,143 +498,394 @@ unsigned int config_namesum(const char *name, unsigned int length) {
 	crc32_close(&sum);
 
 	return sum;
+#undef IS_MAJ
 }
 
-#undef IS_MAJ
-
-/* Force a config file to be loaded to memory */
+/* Load all fields of the specified config file. */
 int config_load(struct config_file *config) {
-	char buffer[1024], *ptr, *equal;
+	struct config_field *field;
+	char *line, *value, *tmp;
 	unsigned int i;
 	unsigned int namesum;
-	FILE *f;
+	char *buffer;
+	unsigned int length;
+	char *comment = NULL;
 	
 	if(!config) {
 		CONFIG_DBG("Params error");
 		return 0;
 	}
-
+	
 	if(!config->filename) {
-		/* not backed up on disk - can't load */
+		// not backed up on disk - can't load
 		return 1;
 	}
-
-	if(config->loaded) {
-		CONFIG_DBG("Already loaded");
+	
+	buffer = config_load_file(config->filename, &length);
+	if(!buffer) {
+		/* The file could not be loaded!
+			Maybe it does not yet exist? */
+		CONFIG_DBG("Could not load config file \"%s\", maybe the file does not exist?", config->filename);
 		return 0;
 	}
+	
+	CONFIG_DBG("Loading file \"%s\"", config->filename);
 
-	/* open the file */
-	f = fopen(config->filename, "r");
-	if(!f) {
-		/* if we cannot open the file, it's no error because it doesn't have to exist. */
-		config->loaded = 1;
-		return 0;
-	}
-
-	/* search the parameter */
-	while(!feof(f)) {
-
-		/* read a line */
-		if(!fgets(buffer, sizeof(buffer)-1, f)) break;
-
-		/* avoid comments */
-		if(buffer[0] == '#') continue;
-
-		for(i=0;i<strlen(buffer);i++) {
-			if(buffer[i] == '\r') buffer[i] = 0;
-			if(buffer[i] == '\n') buffer[i] = 0;
+	// search the parameter
+	i = 0;
+	while(i < length) {
+		if(buffer[i] == '#') {
+			//unsigned int j;
+			/* this is a comment, and we need to
+				check where it stops and copy it to the next field we get. */
+			comment = &buffer[i];
+			for(;i<length;i++) {
+				if(((buffer[i] == '\r') || (buffer[i] == '\n')) && ((buffer[i+1] != '\r') && (buffer[i+1] != '\n') && (buffer[i+1] != '#'))) {
+					buffer[i++] = 0;
+					break;
+				}
+			}
+			
+			CONFIG_DBG("New comment \"%s\"", comment);
+			
+			// continue on with the next line!
 		}
-
-		equal = strchr(buffer, '=');
-		if(!equal) continue;
-		ptr = equal;
-		while(*(ptr-1) == ' ' && ((ptr-1) >= buffer)) ptr--;
-		*ptr = 0;
 		
-		ptr = equal+1;
-		while(*ptr == ' ' && *ptr) ptr++;
-
-		// buffer is the name
-		// ptr is the value
-
-		namesum = config_namesum(buffer, strlen(buffer));
-
-		config_new_field(config, buffer, namesum, ptr);
+		line = &buffer[i];
+		
+		for(;i<length;i++) {
+			if((buffer[i] == '\r') || (buffer[i] == '\n')) {
+				buffer[i++] = 0;
+				break;
+			}
+		}
+		
+		if(!line[0]) continue; // empty line, go on...
+		
+		//CONFIG_DBG("Loading line: %s", line);
+		
+		value = strchr(line, '=');
+		if(!value) continue; // no equal sign on the line
+		
+		/* erase the white spaces after the name */
+		tmp = value;
+		while(((tmp-1) >= buffer) && (*(tmp-1) == ' ')) tmp--;
+		*tmp = 0;
+		
+		/* erase the white spaces after the equal sign */
+		value++;
+		while(*value == ' ' && *value) value++;
+		
+		//CONFIG_DBG("Loading field \"%s\" = \"%s\" at %u", line, value, (line-buffer));
+		
+		namesum = config_namesum(line, strlen(line));
+		field = config_new_field(config, line, namesum, value);
+		
+		if(comment) {
+			field->comments = strdup(comment);
+			comment = NULL;
+		}
 	}
-
-	fclose(f);
-	config->loaded = 1;
-
+	
+	if(comment) {
+		config->comments = strdup(comment);
+		comment = NULL;
+	}
+	
 	return 1;
 }
 
-static int config_save_modified(struct collection *c, struct config_field *field, struct config_file *config) {
+static int config_find_matcher(struct collection *c, struct config_file *config, const char *filename) {
+	if(!config->filename) return 0;
+	return !strcasecmp(config->filename, filename);
+}
 
-	if(field->modified) {
-		if(field->value) {
-			config_raw_write(config->filename, field->name, field->value);
-		} else {
-			config_field_destroy(field);
-		}
-		field->modified = 0;
+static struct config_file *config_find(const char *filename) {
+	if(!filename)
+		return NULL;
+	
+	return (struct config_file *)collection_match(open_configs, (collection_f)config_find_matcher, (void *)filename);
+}
+
+
+struct config_file *config_volatile() {
+	
+	return config_open(NULL);
+}
+
+/* Initialize the config structure without loading the file */
+struct config_file *config_open(const char *filename) {
+	struct config_file *config;
+	
+	if(!open_configs) {
+		open_configs = collection_new(C_CASCADE);
 	}
 
+	if(filename) {
+		config = config_find(filename);
+		if(config) {
+			config->refs++;
+			return config;
+		}
+	}
+	
+	config = malloc(sizeof(struct config_file));
+	if(!config) {
+		CONFIG_DBG("Memory error");
+		return NULL;
+	}
+	
+	obj_init(&config->o, config, (obj_f)config_obj_destroy);
+	collectible_init(config);
+	
+	if(filename) {
+		config->filename = strdup(filename);
+		if(!config->filename) {
+			CONFIG_DBG("Memory error");
+			free(config);
+			return NULL;
+		}
+	} else {
+		config->filename = NULL;
+	}
+
+	config->comments = NULL;
+	
+	config->adf = NULL;
+	config->op = NULL;
+	
+	config->refs = 1;
+	
+	config->is_saving = 0;
+	config->shouldsave = 0;
+
+	config->savetime = time_now();
+
+	config->fields = collection_new(C_CASCADE);
+	
+	config_load(config);
+
+	if(!collection_add(open_configs, config)) {
+		if(config->filename) free(config->filename);
+		collection_destroy(config->fields);
+		free(config);
+		return NULL;
+	}
+
+	return config;
+}
+
+static int config_dump_getlength(struct collection *c, struct config_field *field, unsigned int *length) {
+	
+	*length += (field->comments ? 2 + strlen(field->comments) + 2 : 0) + // crlf + field's comments
+				strlen(field->name) +	// field name
+				3 +						// space, equal sign, space
+				strlen(field->value) +			// field value
+				2;						// crlf
+	
 	return 1;
+}
+
+static int config_dump_print(struct collection *c, struct config_field *field, void *param) {
+	struct {
+		char *buffer;
+		unsigned int pos;
+	} *ctx = param;
+	unsigned int length;
+	
+	if(field->comments) {
+		length = strlen(field->comments);
+		ctx->buffer[ctx->pos++] = '\r';
+		ctx->buffer[ctx->pos++] = '\n';
+		memcpy(&ctx->buffer[ctx->pos], field->comments, length);
+		ctx->pos += length;
+		ctx->buffer[ctx->pos++] = '\r';
+		ctx->buffer[ctx->pos++] = '\n';
+	}
+	
+	length = strlen(field->name);
+	memcpy(&ctx->buffer[ctx->pos], field->name, length);
+	ctx->pos += length;
+	
+	ctx->buffer[ctx->pos++] = ' ';
+	ctx->buffer[ctx->pos++] = '=';
+	ctx->buffer[ctx->pos++] = ' ';
+	
+	length = strlen(field->value);
+	memcpy(&ctx->buffer[ctx->pos], field->value, length);
+	ctx->pos += length;
+	
+	ctx->buffer[ctx->pos++] = '\r';
+	ctx->buffer[ctx->pos++] = '\n';
+	
+	return 1;
+}
+
+static char *config_dump(struct config_file *config, unsigned int *length) {
+	struct {
+		char *buffer;
+		unsigned int pos;
+	} ctx = { NULL, 0 };
+	
+	if(!config || !length) {
+		CONFIG_DBG("Params error");
+		return NULL;
+	}
+	
+	*length = config->comments ? (2 + strlen(config->comments)) : 0;
+	collection_iterate(config->fields, (collection_f)config_dump_getlength, length);
+	if(!*length) return NULL;
+	
+	ctx.buffer = malloc(*length);
+	if(!ctx.buffer) {
+		*length = 0;
+		CONFIG_DBG("Memory error");
+		return NULL;
+	}
+	memset(ctx.buffer, 0, *length);
+	
+	collection_iterate(config->fields, (collection_f)config_dump_print, &ctx);
+	if(config->comments) {
+		unsigned int comments_length = strlen(config->comments);
+		memcpy(&ctx.buffer[ctx.pos], config->comments, comments_length);
+		ctx.pos += comments_length;
+	}
+	
+	return ctx.buffer;
 }
 
 /* Force any changes in a config file to be saved to disk */
 int config_save(struct config_file *config) {
-
+	char *buffer;
+	unsigned int length;
+	
 	if(!config) {
 		CONFIG_DBG("Params error");
 		return 0;
 	}
 
 	if(!config->filename) {
-		/* not backed up on disk - can't save */
+		// not backed up on disk - can't save
 		return 0;
 	}
 	
-	if(!config->loaded) {
-		CONFIG_DBG("Config not loaded");
+	if(!config->shouldsave) {
+		/* file not modified, don't need to save. */
+		//CONFIG_DBG("The file does not need saving: %s", config->filename);
 		return 0;
 	}
 	
-	if(!config->modified) {
-		CONFIG_DBG("Config not modified");
+	if(config->is_saving) {
+		/* the file is already currently being saved.
+			We will mark it again so it will be saved next time. */
+		//CONFIG_DBG("File is already being saved: %s", config->filename);
+		config->shouldsave = 1;
 		return 0;
 	}
-
-	collection_iterate(config->fields, (collection_f)config_save_modified, config);
-	config->modified = 0;
-	config->savetime = time_now();
+	
+	//CONFIG_DBG("SAVING: %s", config->filename);
+	
+	/* remove the 'should save' flag and set the 'is saving' flag. */
+	config->shouldsave = 0;
+	config->is_saving = 1;
+	
+	/* just remove the file if it become empty */
+	if(!collection_size(config->fields)) {
+		remove(config->filename);
+		return 1;
+	}
+	
+	/* build the actual buffer that we will be writing to disk. */
+	buffer = config_dump(config, &length);
+	if(!buffer) {
+		CONFIG_DBG("Memory error");
+		return 0;
+	}
+	
+	config->adf = adio_open(config->filename, 1);
+	if(!config->adf) {
+		config->shouldsave = 1;
+		config->is_saving = 0;
+		config->savetime = time_now();
+		CONFIG_DBG("Warning: %s: could not open the file to save it! Will try again later...", config->filename);
+		free(buffer);
+		return 0;
+	}
+	
+	config->op = adio_write(config->adf, buffer, 0, length, config->op);
+	if(!config->op) {
+		config->shouldsave = 1;
+		config->is_saving = 0;
+		config->savetime = time_now();
+		CONFIG_DBG("Warning: %s: could not write to the file! Will try again later...", config->filename);
+		adio_close(config->adf);
+		config->adf = NULL;
+		free(buffer);
+		return 0;
+	}
 
 	return 1;
 }
 
 static int config_poll_save_modified(struct collection *c, struct config_file *config, void *param) {
 
-	if(config->filename && config->loaded && config->modified && (timer(config->savetime) > config->timeout)) {
+	if(!config->filename) {
+		/* not backed on disk */
+		return 1;
+	}
+	
+	if(!config->shouldsave || config->is_saving) {
+		/* should not be saved (not modified) */
+		return 1;
+	}
+	
+	if(timer(config->savetime) >= CONFIG_SAVETIME) {
 		config_save(config);
 	}
 
 	return 1;
 }
 
+static int config_poll_process_adio(struct collection *c, struct config_file *config, void *param) {
+
+	if(!config->adf || !config->op) {
+		/* not currently saving */
+		return 1;
+	}
+	
+	//CONFIG_DBG("Probing config file for save: %s", config->filename);
+	
+	if(adio_probe(config->op, NULL)) {
+		
+		free(config->op->buffer);
+		adio_complete(config->op);
+		adio_close(config->adf);
+		
+		config->op = NULL;
+		config->adf = NULL;
+		
+		config->is_saving = 0;
+		
+		if(config->shouldsave) {
+			/* shouldsave was set again while we were saving. */
+			//CONFIG_DBG("The shouldsave flag was set again while we were saving: %s", config->filename);
+			return 1;
+		}
+		
+		if(!config->refs) {
+			/* no more references. lets close this config file. */
+			obj_destroy(&config->o);
+		}
+	}
+	
+	return 1;
+}
+
 /* Check for timeouts and save files to disk if needed */
 int config_poll() {
-	/*unsigned long long int time;
 
-	time = time_now();*/
-
+	collection_iterate(open_configs, (collection_f)config_poll_process_adio, NULL);
 	collection_iterate(open_configs, (collection_f)config_poll_save_modified, NULL);
-
-	/*time = timer(time);
-
-	if(time) {
-		CONFIG_DBG("Saved all configs in %I64u ms", time);
-	}*/
 
 	return 1;
 }
@@ -708,6 +900,11 @@ int config_poll() {
 
 /* Return a copy of the value that must be freed by the caller. */
 char *config_read(struct config_file *config, const char *param, const char *default_value) {
+	const char *value = config_pread(config, param, default_value);
+	return value ? strdup(value) : NULL;
+}
+
+const char *config_pread(struct config_file *config, const char *param, const char *default_value) {
 	struct config_field *field;
 	unsigned int namesum;
 	
@@ -716,31 +913,15 @@ char *config_read(struct config_file *config, const char *param, const char *def
 		return NULL;
 	}
 	
-	if(!config->loaded && config->filename) {
-		config_load(config);
-	}
-
 	namesum = config_namesum(param, strlen(param));
 	field = config_get_field(config, param, namesum);
 	if(!field) {
 		/* not found ... */
-		return default_value ? strdup(default_value) : NULL;
+		return default_value;
 	}
 
-	/* field->value may be NULL if the field was to be deleted ... */
-	return field->value ? strdup(field->value) : (default_value ? strdup(default_value) : NULL);
-}
-
-char *config_lua_read(struct config_file *config, const char *param, const char *default_value) {
-
-	if(config_lua_buffer) {
-		free(config_lua_buffer);
-		config_lua_buffer = NULL;
-	}
-
-	config_lua_buffer = config_read(config, param, default_value);
-
-	return config_lua_buffer;
+	/* field->value shouldn't be NULL ... */
+	return field->value ? field->value : default_value;
 }
 
 unsigned long long int config_read_int(struct config_file *config, char *param, unsigned long long int default_value) {
@@ -751,17 +932,13 @@ unsigned long long int config_read_int(struct config_file *config, char *param, 
 		CONFIG_DBG("Params error");
 		return 0;
 	}
-	
-	if(!config->loaded && config->filename) {
-		config_load(config);
-	}
 
 	s = config_read(config, param, NULL);
 	if(!s) {
 		/* not found ... */
 		return default_value;
 	}
-
+	
 	n = _atoi64(s);
 	free(s);
 
@@ -771,53 +948,60 @@ unsigned long long int config_read_int(struct config_file *config, char *param, 
 int config_write(struct config_file *config, const char *param, const char *new_value) {
 	struct config_field *field;
 	unsigned int namesum;
-
+	
 	if(!config || !param) {
 		CONFIG_DBG("Params error");
 		return 0;
 	}
 	
-	if(!config->loaded && config->filename) {
-		config_load(config);
-	}
-
 	namesum = config_namesum(param, strlen(param));
 	field = config_get_field(config, param, namesum);
 	if(field) {
+		/* The field is already present in the file */
+		
+		if(!new_value) {
+			/* we need to delete the field from the file */
+			config_field_destroy(field);
+			config->shouldsave = 1;
+			return 1;
+		}
+		
+		if(!strcmp(field->value, new_value)) {
+			/* don't waste time saving if both values are the same */
+			return 1;
+		}
+		
 		if(field->value) {
+			/* clear the current value of the field */
 			free(field->value);
 			field->value = NULL;
-
-			field->modified = 1;
-			config->modified = 1;
 		}
-
-		if(new_value) {
-			field->value = strdup(new_value);
-			if(!field->value) {
-				CONFIG_DBG("Memory error");
-				return 0;
-			}
-			field->modified = 1;
-			config->modified = 1;
+		
+		/* write the new value to the field */
+		field->value = strdup(new_value);
+		if(!field->value) {
+			CONFIG_DBG("Memory error");
+			return 0;
 		}
-
+		
+		config->shouldsave = 1;
+		
 		return 1;
 	}
-
+	
 	if(!new_value) {
-		/* no new value means the value is to be deleted anyway */
+		/* no new value means we're done */
 		return 1;
 	}
-
+	
 	field = config_new_field(config, param, namesum, new_value);
 	if(!field) {
 		CONFIG_DBG("Memory error");
 		return 0;
 	}
-	field->modified = 1;
-	config->modified = 1;
-
+	
+	config->shouldsave = 1;
+	
 	return 1;
 }
 
@@ -829,10 +1013,6 @@ int config_write_int(struct config_file *config, const char *param, unsigned lon
 		return 0;
 	}
 	
-	if(!config->loaded && config->filename) {
-		config_load(config);
-	}
-
 	s = bprintf("%I64u", new_value);
 	if(!s) {
 		CONFIG_DBG("Memory error");
@@ -845,5 +1025,84 @@ int config_write_int(struct config_file *config, const char *param, unsigned lon
 	}
 
 	free(s);
+	return 1;
+}
+
+int config_field_comment(struct config_file *config, const char *param, const char *new_comment) {
+	struct config_field *field;
+	unsigned int namesum;
+	
+	if(!config || !param) {
+		CONFIG_DBG("Params error");
+		return 0;
+	}
+	
+	namesum = config_namesum(param, strlen(param));
+	field = config_get_field(config, param, namesum);
+	if(!field)
+		return 0;
+	
+	/* The field is already present in the file */
+	
+	if(field->comments && new_comment && !strcmp(field->comments, new_comment)) {
+		/* don't waste time saving if both values are the same */
+		return 1;
+	}
+	
+	if(!field->comments && !new_comment)
+		return 0;
+	
+	if(field->comments) {
+		/* clear the current value of the field */
+		free(field->comments);
+		field->comments = NULL;
+	}
+	
+	/* write the new value to the field */
+	if(new_comment) {
+		field->comments = strdup(new_comment);
+		if(!field->comments) {
+			CONFIG_DBG("Memory error");
+			return 0;
+		}
+	}
+	
+	config->shouldsave = 1;
+	
+	return 1;
+}
+
+int config_file_comment(struct config_file *config, const char *new_comment) {
+	
+	if(!config) {
+		CONFIG_DBG("Params error");
+		return 0;
+	}
+	
+	if(!strcmp(config->comments, new_comment)) {
+		/* don't waste time saving if both values are the same */
+		return 1;
+	}
+	
+	if(!config->comments && !new_comment)
+		return 0;
+	
+	if(config->comments) {
+		/* clear the current value of the field */
+		free(config->comments);
+		config->comments = NULL;
+	}
+	
+	/* write the new value to the field */
+	if(new_comment) {
+		config->comments = strdup(new_comment);
+		if(!config->comments) {
+			CONFIG_DBG("Memory error");
+			return 0;
+		}
+	}
+	
+	config->shouldsave = 1;
+	
 	return 1;
 }

@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 
 #include "io.h"
 #include "slaves.h"
@@ -44,7 +47,7 @@
 
 static unsigned int update_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 	
-	UPDATE_DBG("%I64u: Update response received: update failed ?", cmd->uid);
+	UPDATE_DBG("" LLU ": Update response received: update failed ?", cmd->uid);
 	
 	return 1;
 }
@@ -63,7 +66,7 @@ int update_slave(struct slave_connection *cnx, const char *filename) {
 	}
 	
 	/* Send the update packet to the slave. */
-	cmd = asynch_new(cnx, IO_UPDATE, INFINITE, buffer, size, update_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_UPDATE, -1, (unsigned char *)buffer, size, update_query_callback, NULL);
 	free(buffer);
 	if(!cmd) {
 		UPDATE_DBG("Could NOT build update buffer for update!");

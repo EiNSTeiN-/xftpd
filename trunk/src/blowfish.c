@@ -33,7 +33,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#else
+#include <stdlib.h>
+#include <string.h>
+#endif
 
 /*
 	Blowfish module modified from the FiSH project:
@@ -474,7 +479,7 @@ char *blowfish_encrypt(struct bf_state *state, char *str) {
 	strncpy(s, str, len);
 	s[len]=0;
 	
-	p = s;
+	p = (unsigned char *)s;
 	while (*p) p++;
 	for (i = 0; i < 8; i++) *p++ = 0;
 	
@@ -485,7 +490,7 @@ char *blowfish_encrypt(struct bf_state *state, char *str) {
 		return NULL;
 	}
 	
-	p = s;
+	p = (unsigned char *)s;
 	d = dest;
 	while (*p) {
 		left = ((*p++) << 24);

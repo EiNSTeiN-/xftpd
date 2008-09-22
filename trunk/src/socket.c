@@ -35,10 +35,10 @@
 
 #define FD_SETSIZE 512
 
-#include <winsock2.h>
-#include <windows.h>
+#ifdef WIN32
+#else
 #include <poll.h>
-#include <stdio.h>
+#endif
 
 #include "socket.h"
 #include "collection.h"
@@ -49,26 +49,32 @@
 //unsigned long long int socket_current = 0;
 
 int socket_init() {
-	SOCKET_DBG("Socket set size is %u", FD_SETSIZE);
+	//SOCKET_DBG("Socket set size is %u", FD_SETSIZE);
 
+#ifdef WIN32
 	WORD wVersionRequested = MAKEWORD(2, 2);
 	WSADATA wsaData;
 
 	WSAStartup(wVersionRequested, &wsaData);
 	
 	/*
-		my dumb compiler, won't find those two
+		my dumb compiler won't find those two
 		for the libraries unless I reference
 		them in one of the executable's objects.
 	*/
 	WSASetLastError(WSAGetLastError());
-
+#else
+  // ...
+#endif
+  
 	return 1;
 }
 
 void socket_free() {
-	WSACleanup();
-	
+#ifdef WIN32
+	WSACleanup();#else
+  // ...
+#endif
 	return;
 }
 
@@ -110,10 +116,32 @@ unsigned int socket_peer_address(int s) {
 	if(getpeername(s, (struct sockaddr *)&addr, &len))
 		return 0;
 
-	return addr.sin_addr.S_un.S_addr;
+	return *(unsigned int *)&addr.sin_addr;
 }
 
-const char *socket_formated_peer_address(int s) {
+ipaddress mkipaddress(char c1, char c2, char c3, char c4)
+{
+	ipaddress ip;
+
+	ip.c1 = c1;
+	ip.c2 = c2;
+	ip.c3 = c3;
+	ip.c4 = c4;
+	
+	return *(ipaddress *)&ip;
+}
+
+ipaddress socket_ipaddress(int s) {
+	struct sockaddr_in addr;
+	unsigned int len = sizeof(struct sockaddr_in);
+
+	if(getpeername(s, (struct sockaddr *)&addr, &len))
+		return mkipaddress(-1,-1,-1,-1);
+
+	return *(ipaddress *)&addr.sin_addr;
+}
+
+const char *socket_ntoa(int s) {
 	struct sockaddr_in addr;
 	unsigned int len = sizeof(struct sockaddr_in);
 
@@ -130,20 +158,27 @@ unsigned int socket_local_address(int s) {
 	if(getsockname(s, (struct sockaddr *)&addr, &len))
 		return 0;
 
-	return addr.sin_addr.S_un.S_addr;
+	return *(unsigned int *)&addr.sin_addr;
 }
 
 int make_socket_blocking(int s, int blocking) {
-	u_long opts;
+	int r;
 
+#ifdef WIN32
+	u_long opts;
+	
 	if(blocking == 0) opts = 1;
 	else opts = 0;
+  r = (ioctlsocket(s, FIONBIO, &opts) == 0);
+#else
+  r = (fcntl(s, F_SETFD, O_NONBLOCK) == 0);
+#endif
 
-	return (ioctlsocket(s, FIONBIO, &opts) == 0);
+	return r;
 }
 
 unsigned int socket_addr(const char *hostname) {
-  LPHOSTENT host_entry;
+  struct hostent *host_entry;
 
   host_entry = gethostbyname(hostname); /* FIXME: use getaddrinfo */
   if(host_entry == NULL) return INVALID_SOCKET;
@@ -161,7 +196,7 @@ int socket_linger(int fd, unsigned short timeout) {
 }
 
 int connect_to_ip_non_blocking(unsigned int ip, short port) {
-	SOCKADDR_IN saServer;
+	struct sockaddr_in saServer;
 	int s;
 
 	s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -171,10 +206,10 @@ int connect_to_ip_non_blocking(unsigned int ip, short port) {
 	}
 	make_socket_blocking(s, 0);
 	saServer.sin_family = AF_INET;
-	saServer.sin_addr.S_un.S_addr = ip;
+	*(unsigned int *)&saServer.sin_addr = ip;
 	saServer.sin_port = htons(port);
-	if((connect(s, (LPSOCKADDR)&saServer, sizeof(struct sockaddr)) == SOCKET_ERROR) &&
-			(GetLastError() != WSAEWOULDBLOCK)) {
+	if((connect(s, (struct sockaddr *)&saServer, sizeof(struct sockaddr)) == SOCKET_ERROR) &&
+			(GetLastError() != EWOULDBLOCK)) {
 		SOCKET_DBG("non-blocking connect() failed.");
 		closesocket(s);
 		return INVALID_SOCKET;
@@ -198,14 +233,14 @@ int connect_to_ip_non_blocking(unsigned int ip, short port) {
 
 int connect_to_ip(unsigned int ip, short port) {
 	int s;
-	SOCKADDR_IN saServer;
+	struct sockaddr_in saServer;
 
 	s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if(s == INVALID_SOCKET) return INVALID_SOCKET;
 	saServer.sin_family = AF_INET;
-	saServer.sin_addr.S_un.S_addr = ip;
+	*(unsigned int *)&saServer.sin_addr = ip;
 	saServer.sin_port = htons(port);
-	if(connect(s, (LPSOCKADDR)&saServer, sizeof(struct sockaddr)) == SOCKET_ERROR) {
+	if(connect(s, (struct sockaddr *)&saServer, sizeof(struct sockaddr)) == SOCKET_ERROR) {
 		SOCKET_DBG("connect() failed.");
 		closesocket(s);
 		return INVALID_SOCKET;
@@ -228,7 +263,7 @@ int connect_to_ip(unsigned int ip, short port) {
 }
 
 int connect_to_host(const char *hostname, short port) {
-  LPHOSTENT host_entry;
+  struct hostent *host_entry;
 
   host_entry = gethostbyname(hostname); /* FIXME: use getaddrinfo */
   if(host_entry == NULL) return INVALID_SOCKET;
@@ -237,7 +272,7 @@ int connect_to_host(const char *hostname, short port) {
 }
 
 int connect_to_host_non_blocking(const char *hostname, short port) {
-  LPHOSTENT host_entry;
+  struct hostent *host_entry;
 
   host_entry = gethostbyname(hostname); /* FIXME: use getaddrinfo */
   if(host_entry == NULL) return INVALID_SOCKET;
@@ -248,8 +283,8 @@ int connect_to_host_non_blocking(const char *hostname, short port) {
 int create_listening_socket(short int port)
 {
 	int s;
-	SOCKADDR_IN addr;
-	BOOL i;
+	struct sockaddr_in addr;
+	unsigned int i;
 
 	s = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if(s == INVALID_SOCKET) {
@@ -262,7 +297,7 @@ int create_listening_socket(short int port)
 
 	/* set reuse option ON */
 	i = 1;
-	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char*)&i, sizeof(BOOL));
+	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char*)&i, sizeof(i));
 
 	/* enable TCP_NODELAY */
 	/*{
@@ -271,7 +306,7 @@ int create_listening_socket(short int port)
 			printf("could not enable TCP_NODELAY\n");
 	}*/
 
-	if(bind(s, (LPSOCKADDR)&addr, sizeof(struct sockaddr)) != 0) {
+	if(bind(s, (struct sockaddr *)&addr, sizeof(struct sockaddr)) != 0) {
 		SOCKET_DBG("bind() failed.");
 		closesocket(s);
 		return INVALID_SOCKET;
@@ -378,8 +413,13 @@ int socket_avail(int fd) {
 	unsigned long argp = 0;
 	
 	/* get the length of data available to be read */
+#ifdef WIN32
 	if(ioctlsocket(fd, FIONREAD, &argp) != 0)
 		return 0;
+#else
+	if(ioctl(fd, FIONREAD, &argp) != 0)
+		return 0;
+#endif
 
 	return (int)argp;
 }
@@ -590,7 +630,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 			continue;
 		}
 
-		if(fdset[i].revents & POLLRDNORM) {
+		if(fdset[i].revents &  POLLIN) { //POLLRDNORM) {
 
 			if(!fdset_monitors[i]->connected && fdset_monitors[i]->listening) {
 
@@ -603,7 +643,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 					instead.
 				*/
 
-				SOCKET_SIGNALS_DBG("fds[%08x] POLLRDNORM, connect at %08x", fdset[i].fd, (int)fdset_monitors[i]);
+				SOCKET_SIGNALS_DBG("fds[%08x] POLLIN, connect at %08x", fdset[i].fd, (int)fdset_monitors[i]);
 				signal_raise(fdset_monitors[i]->connect_signal, (void *)fdset_monitors[i]->fd);
 
 				HANDLE_CLEANUP(i);
@@ -619,7 +659,7 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 					flag is raised, it means the socket just closed
 				*/
 				fdset_monitors[i]->dead = 1;
-				SOCKET_SIGNALS_DBG("fds[%08x] POLLRDNORM, close, %d avail.", fdset[i].fd, socket_avail(fdset_monitors[i]->fd));
+				SOCKET_SIGNALS_DBG("fds[%08x] POLLIN, close, %d avail.", fdset[i].fd, socket_avail(fdset_monitors[i]->fd));
 				signal_raise(fdset_monitors[i]->close_signal, (void *)fdset_monitors[i]->fd);
 
 				obj_destroy(&fdset_monitors[i]->o);
@@ -643,13 +683,13 @@ static int socket_handle_fdset(struct pollfd fdset[], struct socket_monitor *fds
 			}
 		}
 
-		if(fdset[i].revents & POLLWRNORM) {
+		if(fdset[i].revents & POLLOUT) { //POLLWRNORM) {
 			if(!fdset_monitors[i]->connected && !fdset_monitors[i]->listening) {
 				
 				/* the socket is now connected */
 
 				fdset_monitors[i]->connected = 1;
-				SOCKET_SIGNALS_DBG("fds[%08x] POLLWRNORM, connect at %08x", fdset[i].fd, (int)fdset_monitors[i]);
+				SOCKET_SIGNALS_DBG("fds[%08x] POLLOUT, connect at %08x", fdset[i].fd, (int)fdset_monitors[i]);
 				signal_raise(fdset_monitors[i]->connect_signal, (void *)fdset_monitors[i]->fd);
 
 				HANDLE_CLEANUP(i);
@@ -709,13 +749,13 @@ unsigned int socket_poll_monitors(struct collection *c, struct socket_monitor *m
 
 	if(!monitor->connected) {
 		if(monitor->listening)
-			ctx->fdset[ctx->nfds].events |= POLLRDNORM;
+			ctx->fdset[ctx->nfds].events |= POLLIN; //POLLRDNORM;
 		else
-			ctx->fdset[ctx->nfds].events |= POLLWRNORM;
+			ctx->fdset[ctx->nfds].events |= POLLOUT; //POLLWRNORM;
 		
 		ctx->fdset[ctx->nfds].events |= POLLERR;
 	} else {
-		ctx->fdset[ctx->nfds].events |= POLLERR | POLLRDNORM | POLLWRNORM;
+		ctx->fdset[ctx->nfds].events |= POLLERR | POLLIN | POLLOUT; //POLLRDNORM | POLLWRNORM;
 	}
 
 	ctx->nfds++;

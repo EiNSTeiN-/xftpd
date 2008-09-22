@@ -33,14 +33,17 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
-#include <poll.h>
+//#include <poll.h>
 #include <stdio.h>
 #include <fcntl.h>
-#include <io.h>
 
 #include "main.h"
+#include "asprintf.h"
 #include "collection.h"
 #include "config.h"
 #include "constants.h"
@@ -59,6 +62,8 @@
 #include "signal.h"
 #include "nuke.h"
 #include "asynch.h"
+#include "dir.h"
+#include "wild.h"
 
 struct collection *slaves = NULL; /* slave_ctx structures */
 
@@ -74,44 +79,41 @@ static unsigned int slaves_use_encryption = 0;
 static unsigned int slaves_use_compression = 0;
 static unsigned int slaves_compression_threshold = 500;
 
+#define ENDSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strcasecmp(&a[strlen(a)-strlen(b)], b))
+#define BEGINSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strncasecmp(a, b, strlen(b)))
+
 int slaves_load_config() {
 	struct slave_ctx *slave;
-	struct _finddata_t fd;
-	intptr_t handle;
-	char *path, *file;
+	struct dir_ctx *dir;
+	char *path;
 
-	path = _fullpath(NULL, ".", 0);
-	if(!path)
+	path = dir_fullpath(SLAVES_FOLDER);
+	if(!path) {
+		SLAVES_DBG("Couldn't resolve \"" SLAVES_FOLDER "\"");
 		return 0;
-
-	file = malloc(strlen(path) + strlen(SLAVES_FOLDER "slave.*") + 1);
-	if(!file) {
-		free(path);
-		return 0;
-	}
-	sprintf(file, "%s" SLAVES_FOLDER "slave.*", path);
-	free(path);
-
-	handle = _findfirst(file, &fd);
-	free(file);
-	if (handle == -1) {
-		SLAVES_DBG("Couldn't load \"" SLAVES_FOLDER "slave.*\"");
+  }
+  
+	dir = dir_open(path, "slave.*");
+	if (!dir) {
+		SLAVES_DBG("Couldn't open \"%s\"", path);
 	} else {
 		do {
-			if(!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-			if(fd.attrib & _A_SUBDIR) continue;
-			if((strlen(fd.name) > 4) && !stricmp(&fd.name[strlen(fd.name)-4], ".tmp")) continue;
-			if((strlen(fd.name) > 10) && !stricmp(&fd.name[strlen(fd.name)-10], ".deletelog")) continue;
-			if((strlen(fd.name) > 9) && !stricmp(&fd.name[strlen(fd.name)-9], ".fileslog")) continue;
-
-			slave = slave_load(fd.name);
+			if(dir_attrib(dir) & DIR_SUBDIR) continue;
+			if(ENDSWITH(dir_name(dir), ".tmp")) continue;
+			if(ENDSWITH(dir_name(dir), ".deletelog")) continue;
+			if(ENDSWITH(dir_name(dir), ".fileslog")) continue;
+			
+			slave = slave_load(dir_name(dir));
 			if(!slave) {
-				SLAVES_DBG("Could not load file: %s", fd.name);
+				SLAVES_DBG("Could not load file: %s", dir_name(dir));
 				continue;
 			}
-		} while(!_findnext(handle, &fd));
-		_findclose(handle);
+		} while(dir_next(dir));
+		dir_close(dir);
 	}
+	free(path);
 
 	SLAVES_DBG("Added %u slaves", collection_size(slaves));
 
@@ -125,10 +127,13 @@ int slaves_load_config() {
 	return 1;
 }
 
+#undef BEGINSWITH
+#undef ENDSWITH
+
 static int slave_element_usage_callback(struct collection *c, struct vfs_element *child, void *param) {
 	struct {
 		struct slave_connection *cnx;
-		unsigned int size;
+		unsigned long long int size;
 	} *ctx = param;
 	
 	/* recursive call on every childs. */
@@ -137,10 +142,10 @@ static int slave_element_usage_callback(struct collection *c, struct vfs_element
 	return 1;
 }
 
-unsigned int slave_usage_from(struct slave_connection *cnx, struct vfs_element *element) {
+unsigned long long int slave_usage_from(struct slave_connection *cnx, struct vfs_element *element) {
 	struct {
 		struct slave_connection *cnx;
-		unsigned int size;
+		unsigned long long int size;
 	} ctx = { cnx, 0 };
 	
 	if(element->type == VFS_FOLDER) {
@@ -155,14 +160,14 @@ unsigned int slave_usage_from(struct slave_connection *cnx, struct vfs_element *
 	return ctx.size;
 }
 
-const char *slave_address(struct slave_connection *cnx) {
+ipaddress slave_ipaddress(struct slave_connection *cnx) {
 
 	if(!cnx) {
 		SLAVES_DBG("Called slave_address with cnx == NULL");
-		return "unknown";
+		return mkipaddress(-1,-1,-1,-1);
 	}
 
-	return socket_formated_peer_address(cnx->io.fd);
+	return socket_ipaddress(cnx->io.fd);
 }
 
 /* add all files in the fileslog to the vfs */
@@ -184,7 +189,7 @@ unsigned int slave_load_fileslog(struct slave_ctx *slave) {
 
 	buffer = config_load_file(slave->fileslog, &fsize);
 	if(!buffer) {
-		//SLAVES_DBG("Could not open fileslog for %s", slave->name);
+		SLAVES_DBG("Could not open fileslog for %s", slave->name);
 		return 0;
 	}
 
@@ -267,7 +272,7 @@ unsigned int slave_load_fileslog(struct slave_ctx *slave) {
 	free(buffer);
 
 	t = timer(t);
-	SLAVES_DBG("Fileslog for %s loaded in %I64u ms", slave->name, t);
+	SLAVES_DBG("Fileslog for %s loaded in " LLU " ms", slave->name, t);
 
 	return 1;
 }
@@ -285,7 +290,7 @@ int slave_dump_fileslog_callback(struct collection *c, struct vfs_element *file,
 		return 1;
 	}
 
-	logging_write_file(ctx->f, "%s;%I64u;%I64u;%s;%u\n",
+	logging_write_file(ctx->f, "%s;" LLU ";" LLU ";%s;%u\n",
 		path, file->size, file->timestamp, file->owner, file->checksum);
 
 	free(path);
@@ -323,7 +328,7 @@ unsigned int slave_dump_fileslog(struct slave_ctx *slave) {
 	/*time = timer(time);
 
 	if(time) {
-		SLAVES_DBG("Fileslog dumped in %I64u ms for %s", time, slave->name);
+		SLAVES_DBG("Fileslog dumped in " LLU " ms for %s", time, slave->name);
 	}*/
 
 	return 1;
@@ -431,7 +436,7 @@ unsigned int slave_remove_deletelog_files(struct slave_ctx *slave) {
 
 	buffer = config_load_file(slave->deletelog, &fsize);
 	if(!buffer) {
-		//SLAVES_DBG("Could not open deletelog for %s", slave->name);
+		SLAVES_DBG("Could not open deletelog for %s", slave->name);
 		return 0;
 	}
 
@@ -501,7 +506,7 @@ static void slave_obj_destroy(struct slave_ctx *slave) {
 
 	/* delete the file */
 	if(slave->config) {
-		config_destroy(slave->config);
+		config_close(slave->config);
 		slave->config = NULL;
 	}
 	if(slave->fileslog) {
@@ -541,39 +546,34 @@ struct slave_ctx *slave_load(const char *filename) {
 	char *fileslog;
 	char *deletelog;
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(SLAVES_FOLDER);
 	if(!path) {
 		SLAVES_DBG("Memory error");
 		return NULL;
 	}
-
-	fullpath = malloc(strlen(path) + strlen(SLAVES_FOLDER) + strlen(filename) + 1);
+	
+	fullpath = bprintf("%s/%s", path, filename);
+	free(path);
+	path = NULL;
 	if(!fullpath) {
 		SLAVES_DBG("Memory error");
-		free(path);
 		return NULL;
 	}
-	sprintf(fullpath, "%s" SLAVES_FOLDER "%s", path, filename);
 
-	fileslog = malloc(strlen(path) + strlen(SLAVES_FOLDER) + strlen(filename) + strlen(".fileslog") + 1);
+	fileslog = bprintf("%s.fileslog", fullpath, filename);
 	if(!fileslog) {
 		SLAVES_DBG("Memory error");
 		free(fullpath);
-		free(path);
 		return NULL;
 	}
-	sprintf(fileslog, "%s" SLAVES_FOLDER "%s.fileslog", path, filename);
 
-	deletelog = malloc(strlen(path) + strlen(SLAVES_FOLDER) + strlen(filename) + strlen(".deletelog") + 1);
+	deletelog = bprintf("%s.deletelog", fullpath, filename);
 	if(!deletelog) {
 		SLAVES_DBG("Memory error");
 		free(fileslog);
 		free(fullpath);
-		free(path);
 		return NULL;
 	}
-	sprintf(deletelog, "%s" SLAVES_FOLDER "%s.deletelog", path, filename);
-	free(path);
 
 	/* get the section name */
 	name = config_raw_read(fullpath, "name", NULL);
@@ -598,9 +598,10 @@ struct slave_ctx *slave_load(const char *filename) {
 	obj_init(&slave->o, slave, (obj_f)slave_obj_destroy);
 	collectible_init(slave);
 
-	slave->config = config_new(fullpath, SLAVES_CONFIG_TIMEOUT);
+	slave->config = config_open(fullpath);
 	free(fullpath);
 	if(!slave->config) {
+		SLAVES_DBG("Couldn't open config file %s", fullpath);
 		free(deletelog);
 		free(fileslog);
 		free(name);
@@ -666,7 +667,7 @@ struct slave_ctx *slave_load(const char *filename) {
 
 		slave_dump_fileslog(slave);
 	}
-
+	
 	return slave;
 }
 
@@ -710,9 +711,9 @@ struct slave_ctx *slave_new(const char *name) {
 
 	if(!name) return NULL;
 
-	sprintf(filename, "slave.%I64u", time_now());
+	sprintf(filename, "slave." LLU "", time_now());
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(".");
 	if(!path) {
 		SLAVES_DBG("Memory error");
 		return NULL;
@@ -758,7 +759,7 @@ struct slave_ctx *slave_new(const char *name) {
 	obj_init(&slave->o, slave, (obj_f)slave_obj_destroy);
 	collectible_init(slave);
 
-	slave->config = config_new(fullpath, SLAVES_CONFIG_TIMEOUT);
+	slave->config = config_open(fullpath);
 	free(fullpath);
 	if(!slave->config) {
 		SLAVES_DBG("Memory error");
@@ -782,7 +783,7 @@ struct slave_ctx *slave_new(const char *name) {
 		SLAVES_DBG("Memory error");
 		free(slave->deletelog);
 		free(slave->fileslog);
-		config_destroy(slave->config);
+		config_close(slave->config);
 		free(slave);
 		return NULL;
 	}
@@ -801,7 +802,7 @@ struct slave_ctx *slave_new(const char *name) {
 
 static unsigned int slave_get_matcher(struct collection *c, struct slave_ctx *slave, char *name) {
 
-	return !stricmp(name, slave->name);
+	return !strcasecmp(name, slave->name);
 }
 
 /* return a slave by its name */
@@ -871,21 +872,21 @@ unsigned int slave_delete(struct slave_ctx *slave) {
 static unsigned int delete_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 1;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: Delete query response received", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Delete query response received", p->uid);
 
 	if(p->type == IO_FAILURE) {
 		/* general failure status: slave couln't transfer the file */
 
-		SLAVES_DBG("%I64u: File could NOT be deleted from the remote slave.", p->uid);
+		SLAVES_DBG("" LLU ": File could NOT be deleted from the remote slave.", p->uid);
 		
 		return 1;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: Remote slave deleted file with no problem", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Remote slave deleted file with no problem", p->uid);
 
 	return 1;
 }
@@ -905,13 +906,13 @@ unsigned int slave_delete_file(struct slave_connection *cnx, struct vfs_element 
 		return 0;
 	}
 
-	cmd = asynch_new(cnx, IO_DELETE, MASTER_ASYNCH_TIMEOUT, filepath, strlen(filepath)+1, delete_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_DELETE, MASTER_ASYNCH_TIMEOUT, (unsigned char *)filepath, strlen(filepath)+1, delete_query_callback, NULL);
 	if(!cmd) {
 		free(filepath);
 		return 0;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: Delete query built for %s", cmd->uid, filepath);
+	SLAVES_DIALOG_DBG("" LLU ": Delete query built for %s", cmd->uid, filepath);
 	free(filepath);
 
 	return 1;
@@ -1104,16 +1105,16 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 	unsigned long long int t;
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 	
 	if(p->type != IO_FILE_LIST) {
-		SLAVES_DBG("%I64u: Non-IO_FILE_LIST type received.", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_FILE_LIST type received.", p->uid);
 		return 0;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: File list response received", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": File list response received", p->uid);
 
 	length = (p->size - sizeof(struct packet));
 
@@ -1125,12 +1126,12 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 	while(length > sizeof(struct file_list_entry)) {
 		unsigned int namelen;
 		if(!entry->entry_size) {
-			SLAVES_DBG("%I64u: ZERO entry size!", p->uid);
+			SLAVES_DBG("" LLU ": ZERO entry size!", p->uid);
 			collection_destroy(sfv_files);
 			return 0;
 		}
 		if(entry->entry_size > length) {
-			SLAVES_DBG("%I64u: Not enough room for another entry.", p->uid);
+			SLAVES_DBG("" LLU ": Not enough room for another entry.", p->uid);
 			collection_destroy(sfv_files);
 			return 0;
 		}
@@ -1144,7 +1145,7 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 			/* add the file to the vfs */
 			element = vfs_create_file(cnx->slave->vroot, entry->name, "xFTPd");
 			if(!element) {
-				SLAVES_DBG("%I64u: Could not create the file in vfs: %s", p->uid, element->name);
+				SLAVES_DBG("" LLU ": Could not create the file in vfs: %s", p->uid, element->name);
 				continue;
 			}
 
@@ -1163,7 +1164,7 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 		if(!element->sfv) {
 			/* if the file was .sfv then request its infos */
 			namelen = strlen(element->name);
-			if((namelen > 4) && !stricmp(&element->name[namelen-4], ".sfv")) {
+			if((namelen > 4) && !strcasecmp(&element->name[namelen-4], ".sfv")) {
 				collection_add(sfv_files, element);
 			}
 		}
@@ -1176,7 +1177,7 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 
 	/* dump the files to the fileslog. */
 	//slave_dump_fileslog(cnx->slave);
-	SLAVES_DBG("%I64u: Slave sent %u files (%I64u bytes), we queried for %u sfv in %I64u ms.", p->uid,
+	SLAVES_DBG("" LLU ": Slave sent %u files (" LLU " bytes), we queried for %u sfv in " LLU " ms.", p->uid,
 		total_files, total_size, collection_size(sfv_files), timer(t));
 	
 	/* add th slave to the ready connections */
@@ -1194,7 +1195,7 @@ static unsigned int file_list_query_callback(struct slave_connection *cnx, struc
 		/* this was the last stage of the connection process.
 			now we will call the slave connection callback */
 		if(!event_onSlaveIdentSuccess(cnx)) {
-			SLAVES_DBG("%I64u: Slave connection rejected by onSlaveIdentSuccess", p->uid);
+			SLAVES_DBG("" LLU ": Slave connection rejected by onSlaveIdentSuccess", p->uid);
 			collection_destroy(sfv_files);
 			return 0;
 		}
@@ -1225,7 +1226,7 @@ unsigned int make_file_list_query(struct slave_connection *cnx) {
 	cmd = asynch_new(cnx, IO_FILE_LIST, MASTER_ASYNCH_TIMEOUT, NULL, 0, file_list_query_callback, NULL);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: File list query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": File list query built", cmd->uid);
 
 	return 1;
 }
@@ -1234,16 +1235,16 @@ static unsigned int deletelog_query_callback(struct slave_connection *cnx, struc
 	FILE *f;
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 	
 	if(p->type != IO_DELETED) {
-		SLAVES_DBG("%I64u: Non-IO_DELETED type received.", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_DELETED type received.", p->uid);
 		return 0;
 	}
 	
-	SLAVES_DIALOG_DBG("%I64u: Deletelog response received", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Deletelog response received", p->uid);
 
 	/* clear the deletelog */
 	f = fopen(cnx->slave->deletelog, "w");
@@ -1252,7 +1253,7 @@ static unsigned int deletelog_query_callback(struct slave_connection *cnx, struc
 	/* all delete queries are enqueued, now we have to ask the slave for its
 		file list */
 	if(!make_file_list_query(cnx)) {
-		SLAVES_DBG("%I64u: Could not make file list query", p->uid);
+		SLAVES_DBG("" LLU ": Could not make file list query", p->uid);
 		return 0;
 	}
 
@@ -1282,31 +1283,31 @@ unsigned int make_deletelog_query(struct slave_connection *cnx) {
 	}
 
 	/* make only one delete query on the first pass. */
-	cmd = asynch_new(cnx, IO_DELETELOG, MASTER_ASYNCH_TIMEOUT, buffer, filesize, deletelog_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_DELETELOG, MASTER_ASYNCH_TIMEOUT, (unsigned char *)buffer, filesize, deletelog_query_callback, NULL);
 	free(buffer);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: Deletelog query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Deletelog query built", cmd->uid);
 
 	return 1;
 }
 static unsigned int sslcert_pkey_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 	
 	if(p->type != IO_CERTIFICATE_PKEY) {
-		SLAVES_DBG("%I64u: Non-IO_CERTIFICATE_PKEY type received. Slave does NOT support ssl !?", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_CERTIFICATE_PKEY type received. Slave does NOT support ssl !?", p->uid);
 		/* we won't fail here, the slave will just not be able to send/receive anything */
 	}
 	
-	SLAVES_DIALOG_DBG("%I64u: SSL Certificate PKEY response received.", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": SSL Certificate PKEY response received.", p->uid);
 	
 	/* send the ssl certificate's private key */
 	if(!make_deletelog_query(cnx)) {
-		SLAVES_DBG("%I64u: Could not make deletelog query", p->uid);
+		SLAVES_DBG("" LLU ": Could not make deletelog query", p->uid);
 		return 0;
 	}
 
@@ -1339,15 +1340,15 @@ unsigned int make_sslcert_pkey_query(struct slave_connection *cnx) {
 		return 0;
 	}
 	
-	tmp = buffer;
+	tmp = (unsigned char *)buffer;
 	i2d_PrivateKey(ftpd_certificate_key, &tmp);
 
 	/* make only one delete query on the first pass. */
-	cmd = asynch_new(cnx, IO_CERTIFICATE_PKEY, MASTER_ASYNCH_TIMEOUT, buffer, len, sslcert_pkey_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_CERTIFICATE_PKEY, MASTER_ASYNCH_TIMEOUT, (unsigned char *)buffer, len, sslcert_pkey_query_callback, NULL);
 	free(buffer);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: SSL Certificate PKEY query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": SSL Certificate PKEY query built", cmd->uid);
 
 	return 1;
 }
@@ -1355,20 +1356,20 @@ unsigned int make_sslcert_pkey_query(struct slave_connection *cnx) {
 static unsigned int sslcert_x509_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 	
 	if(p->type != IO_CERTIFICATE_x509) {
-		SLAVES_DBG("%I64u: Non-IO_CERTIFICATE_x509 type received. Slave does NOT support ssl !?", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_CERTIFICATE_x509 type received. Slave does NOT support ssl !?", p->uid);
 		/* we won't fail here, the slave will just not be able to send/receive anything */
 	}
 	
-	SLAVES_DIALOG_DBG("%I64u: SSL Certificate x509 response received.", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": SSL Certificate x509 response received.", p->uid);
 	
 	/* send the ssl certificate's private key */
 	if(!make_sslcert_pkey_query(cnx)) {
-		SLAVES_DBG("%I64u: Could not make ssl certificate pkey query", p->uid);
+		SLAVES_DBG("" LLU ": Could not make ssl certificate pkey query", p->uid);
 		return 0;
 	}
 
@@ -1401,15 +1402,15 @@ unsigned int make_sslcert_x509_query(struct slave_connection *cnx) {
 		return 0;
 	}
 	
-	tmp = buffer;
+	tmp = (unsigned char *)buffer;
 	i2d_X509(ftpd_certificate_file, &tmp);
 
 	/* make only one delete query on the first pass. */
-	cmd = asynch_new(cnx, IO_CERTIFICATE_x509, MASTER_ASYNCH_TIMEOUT, buffer, len, sslcert_x509_query_callback, NULL);
+	cmd = asynch_new(cnx, IO_CERTIFICATE_x509, MASTER_ASYNCH_TIMEOUT, (unsigned char *)buffer, len, sslcert_x509_query_callback, NULL);
 	free(buffer);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: SSL Certificate x509 query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": SSL Certificate x509 query built", cmd->uid);
 
 	return 1;
 }
@@ -1421,20 +1422,20 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 	struct slave_ctx *slave;
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 	
 	if(p->type != IO_HELLO) {
-		SLAVES_DBG("%I64u: Non-IO_HELLO type received.", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_HELLO type received.", p->uid);
 		return 0;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: Hello response received", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Hello response received", p->uid);
 
 	length = (p->size - sizeof(struct packet));
 	if(length < (sizeof(struct slave_hello_data))) {
-		SLAVES_DBG("%I64u: Invalid hello data length", p->uid);
+		SLAVES_DBG("" LLU ": Invalid hello data length", p->uid);
 		return 0;
 	}
 
@@ -1442,22 +1443,22 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 
 	/* extract the name */
 	if(!strlen(hello->name)) {
-		SLAVES_DBG("%I64u: No name received", p->uid);
+		SLAVES_DBG("" LLU ": No name received", p->uid);
 		return 0;
 	}
 
 	/* extract the diskfree */
-	SLAVES_DBG("%I64u: Slave %s connected with %I64u/%I64u bytes free", p->uid, hello->name, hello->diskfree, hello->disktotal);
+	SLAVES_DBG("" LLU ": Slave %s connected with " LLU "/" LLU " bytes free", p->uid, hello->name, hello->diskfree, hello->disktotal);
 
 	cnx->platform = hello->platform;
-	SLAVES_DBG("%I64u: Slave's platform number is %u", p->uid, hello->platform);
+	SLAVES_DBG("" LLU ": Slave's platform number is %u", p->uid, hello->platform);
 	
 	cnx->rev = hello->rev;
-	SLAVES_DBG("%I64u: Slave's revision number is %I64u", p->uid, hello->rev);
+	SLAVES_DBG("" LLU ": Slave's revision number is " LLU "", p->uid, hello->rev);
 	
 	cnx->timediff = (signed long long int)timer(hello->now);
-	SLAVES_DBG("%I64u: Slave's now is %I64u, self now is %I64u", p->uid, hello->now, time_now());
-	SLAVES_DBG("%I64u: Difference is %I64d", p->uid, cnx->timediff);
+	SLAVES_DBG("" LLU ": Slave's now is " LLU ", self now is " LLU "", p->uid, hello->now, time_now());
+	SLAVES_DBG("" LLU ": Difference is %lld", p->uid, cnx->timediff);
 	
 	//cnx->timediff = 0;
 
@@ -1466,13 +1467,13 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 
 	slave = slave_get(hello->name);
 	if(!slave) {
-		SLAVES_DBG("%I64u: Slave %s is NOT known!", p->uid, hello->name);
+		SLAVES_DBG("" LLU ": Slave %s is NOT known!", p->uid, hello->name);
 		event_onSlaveIdentFail(cnx, hello);
 		return 0;
 	}
 
 	if(slave->cnx) {
-		SLAVES_DBG("%I64u: %s is already connected !", p->uid, hello->name);
+		SLAVES_DBG("" LLU ": %s is already connected !", p->uid, hello->name);
 		event_onSlaveIdentFail(cnx, hello);
 		return 0;
 	}
@@ -1485,7 +1486,7 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 		/* send the ssl certificate to the slave so it can send/receive stuff to clients */
 		/* the slave may not support it, but it'll reply with FAILURE and it'll still be safe to continue */
 		if(!make_sslcert_x509_query(cnx)) {
-			SLAVES_DBG("%I64u: Could not make ssl certificate x509 query", p->uid);
+			SLAVES_DBG("" LLU ": Could not make ssl certificate x509 query", p->uid);
 			return 0;
 		}
 	} else {
@@ -1493,7 +1494,7 @@ static unsigned int hello_query_callback(struct slave_connection *cnx, struct sl
 		
 		/* send delete log query */
 		if(!make_deletelog_query(cnx)) {
-			SLAVES_DBG("%I64u: Could not make deletelog query", p->uid);
+			SLAVES_DBG("" LLU ": Could not make deletelog query", p->uid);
 			return 0;
 		}
 	}
@@ -1517,7 +1518,7 @@ static unsigned int make_hello_query(struct slave_connection *cnx) {
 	cmd = asynch_new(cnx, IO_HELLO, MASTER_ASYNCH_TIMEOUT, (void*)&data, sizeof(struct master_hello_data), hello_query_callback, NULL);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: Hello query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Hello query built", cmd->uid);
 	
 	/* FROM THIS POINT, all dialog is encrypted
 		dialog can also (optionally) be compressed
@@ -1538,31 +1539,31 @@ static unsigned int make_hello_query(struct slave_connection *cnx) {
 /* p is NULL on timeout and on read error */
 static unsigned int blowfish_key_query_callback(struct slave_connection *cnx, struct slave_asynch_command *cmd, struct packet *p) {
 	unsigned int length;
-	char *buffer;
+	unsigned char *buffer;
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 		
 	if(p->type != IO_BLOWFISH_KEY) {
-		SLAVES_DBG("%I64u: Non-IO_BLOWFISH_KEY packet received.", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_BLOWFISH_KEY packet received.", p->uid);
 		return 0;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: Blowfish key response reveived", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Blowfish key response reveived", p->uid);
 
 	/* decrypt the client's blowfish key with our private key */
 	length = (p->size - sizeof(struct packet));
 	buffer = crypto_private_decrypt(&cnx->io.lkey, &p->data[0], length, &length);
 	if(!buffer) {
-		SLAVES_DBG("%I64u: Cannot decrypt slave's private key", p->uid);
+		SLAVES_DBG("" LLU ": Cannot decrypt slave's private key", p->uid);
 		return 0;
 	}
 
 	/* set the client's blowfish key */
 	if(!crypto_set_cipher_key(&cnx->io.rbf, buffer, length)) {
-		SLAVES_DBG("%I64u: cannot set cypher key", p->uid);
+		SLAVES_DBG("" LLU ": cannot set cypher key", p->uid);
 		return 0;
 	}
 	memset(buffer, 0, length);
@@ -1571,7 +1572,7 @@ static unsigned int blowfish_key_query_callback(struct slave_connection *cnx, st
 	/* we imported the remote blowfish key correctly,
 		send a hello query */
 	if(!make_hello_query(cnx)) {
-		SLAVES_DBG("%I64u: Could not make hello query", p->uid);
+		SLAVES_DBG("" LLU ": Could not make hello query", p->uid);
 		return 0;
 	}
 
@@ -1581,7 +1582,7 @@ static unsigned int blowfish_key_query_callback(struct slave_connection *cnx, st
 static unsigned int make_blowfish_key_query(struct slave_connection *cnx) {
 	struct slave_asynch_command *cmd;
 	unsigned int length, data_length;
-	char *data, *buffer;
+	unsigned char *data, *buffer;
 
 	/* set the local blowfish key, wich can't be longer than the
 		maximum encryption size of the remote public key */
@@ -1611,7 +1612,7 @@ static unsigned int make_blowfish_key_query(struct slave_connection *cnx) {
 	free(data);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: Blowfish key query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Blowfish key query built", cmd->uid);
 
 	return 1;
 }
@@ -1621,34 +1622,34 @@ static unsigned int public_key_query_callback(struct slave_connection *cnx, stru
 	unsigned int length;
 
 	if(!p) {
-		SLAVES_DBG("%I64u: No good packet received.", cmd->uid);
+		SLAVES_DBG("" LLU ": No good packet received.", cmd->uid);
 		return 0;
 	}
 	
 	if(p->type != IO_PUBLIC_KEY) {
-		SLAVES_DBG("%I64u: Non-IO_PUBLIC_KEY packet received.", p->uid);
+		SLAVES_DBG("" LLU ": Non-IO_PUBLIC_KEY packet received.", p->uid);
 		return 0;
 	}
 
-	SLAVES_DIALOG_DBG("%I64u: Public key response received", p->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Public key response received", p->uid);
 
 	/* init the remote keypair */
 	if(!crypto_initialize_keypair(&cnx->io.rkey, 0)) {
-		SLAVES_DBG("%I64u: Could not initialize keypair.", p->uid);
+		SLAVES_DBG("" LLU ": Could not initialize keypair.", p->uid);
 		return 0;
 	}
 
 	/* import the remote keypair */
 	length = (p->size - sizeof(struct packet));
 	if(!crypto_import_keypair(&cnx->io.rkey, 0, &p->data[0], length)) {
-		SLAVES_DBG("%I64u: Could NOT import slave's keypair", p->uid);
+		SLAVES_DBG("" LLU ": Could NOT import slave's keypair", p->uid);
 		return 0;
 	}
 
 	/* we've imported the remote key with no problem,
 		generate a blowfish key and send it */
 	if(!make_blowfish_key_query(cnx)) {
-		SLAVES_DBG("%I64u: Could not make blowfish key query", p->uid);
+		SLAVES_DBG("" LLU ": Could not make blowfish key query", p->uid);
 		return 0;
 	}
 
@@ -1658,7 +1659,7 @@ static unsigned int public_key_query_callback(struct slave_connection *cnx, stru
 static unsigned int make_public_key_query(struct slave_connection *cnx) {
 	struct slave_asynch_command *cmd;
 	unsigned int length;
-	char *data;
+	unsigned char *data;
 
 	if(!crypto_generate_keypair(&cnx->io.lkey, COMMUNICATION_KEY_LEN)) {
 		SLAVES_DBG("Keypair generation failed");
@@ -1676,7 +1677,7 @@ static unsigned int make_public_key_query(struct slave_connection *cnx) {
 	free(data);
 	if(!cmd) return 0;
 
-	SLAVES_DIALOG_DBG("%I64u: Public key query built", cmd->uid);
+	SLAVES_DIALOG_DBG("" LLU ": Public key query built", cmd->uid);
 
 	return 1;
 }
@@ -1713,7 +1714,7 @@ static unsigned int send_asynch_query_callback(struct collection *c, void *item,
 	/* send the command's data */
 	if(!io_write_data(&ctx->cnx->io, cmd->uid, cmd->command, cmd->data, cmd->data_length)) {
 
-		SLAVES_DBG("%I64u: Could not write packet data", cmd->uid);
+		SLAVES_DBG("" LLU ": Could not write packet data", cmd->uid);
 
 		asynch_destroy(cmd, NULL);
 
@@ -1760,7 +1761,7 @@ static unsigned int read_asynch_response(struct slave_connection *cnx) {
 	unsigned int success;
 
 	/* read a packet */
-	if(!io_read_packet(&cnx->io, &p, INFINITE)) {
+	if(!io_read_packet(&cnx->io, &p, -1)) {
 		SLAVES_DBG("Could not read a packet: stopping");
 		return 0;
 	}
@@ -1789,7 +1790,7 @@ static unsigned int slaves_dump_fileslog_callback(struct collection *c, struct s
 		slave->fileslog_timestamp = time_now();
 
 		if(timer(*time) > FTPD_FILESLOG_THRESHOLD) {
-			SLAVES_DBG("Reached fileslog threshold on %s after %I64u!", slave->name, timer(*time));
+			SLAVES_DBG("Reached fileslog threshold on %s after " LLU "!", slave->name, timer(*time));
 
 			return 1;
 		}
@@ -1822,7 +1823,7 @@ void slaves_dump_fileslog() {
 	/*time = timer(time);
 	
 	if(time) {
-		SLAVES_DBG("Dumped all fileslog in %I64u ms", time);
+		SLAVES_DBG("Dumped all fileslog in " LLU " ms", time);
 	}*/
 
 	return;
@@ -1830,12 +1831,12 @@ void slaves_dump_fileslog() {
 
 int slaves_check_asynch_timeouts(struct collection *c, struct slave_asynch_command *cmd, struct slave_connection *cnx) {
 
-	if(cmd->timeout == INFINITE) {
+	if(cmd->timeout == -1) {
 		return 1;
 	}
 
 	if(timer(cmd->send_time) > cmd->timeout) {
-		SLAVES_DBG("%I64u: Asynch timeout reached! (%u ms) packet type: %u", cmd->uid, cmd->timeout, cmd->command);
+		SLAVES_DBG("" LLU ": Asynch timeout reached! (%u ms) packet type: %u", cmd->uid, cmd->timeout, cmd->command);
 		
 		asynch_destroy(cmd, NULL);
 		
@@ -1855,7 +1856,7 @@ int slaves_check_xfer_timeouts(struct collection *c, struct ftpd_client_ctx *cli
 	}*/
 
 	if(timer(client->xfer.last_alive) > FTPD_XFER_TIMEOUT) {
-		SLAVES_DBG("%I64u: Client xfer timeout reached!", client->xfer.uid);
+		SLAVES_DBG("" LLU ": Client xfer timeout reached!", client->xfer.uid);
 
 		/*if(client->xfer.uid == -1) {
 			SLAVES_DBG("WARNING!!!! Client's xfer uid is -1!!!!");
@@ -1876,7 +1877,7 @@ int slaves_check_mirror_timeouts(struct collection *c, struct mirror_ctx *mirror
 	side = (mirror->source.cnx == cnx) ? &mirror->source : &mirror->target;
 
 	if(timer(side->last_alive) > FTPD_XFER_TIMEOUT) {
-		SLAVES_DBG("%I64u: Mirror xfer timeout reached!", mirror->uid);
+		SLAVES_DBG("" LLU ": Mirror xfer timeout reached!", mirror->uid);
 
 		mirror_cancel(mirror);
 
@@ -1935,7 +1936,7 @@ int slave_connection_read(int fd, struct slave_connection *cnx) {
 
 int slave_connection_read_timeout(struct slave_connection *cnx) {
 	
-	SLAVES_DBG("Read timeout with %s", socket_formated_peer_address(cnx->io.fd));
+	SLAVES_DBG("Read timeout with %s", socket_ntoa(cnx->io.fd));
 
 	/* disconnect from slave */
 	slave_connection_destroy(cnx);
@@ -1945,7 +1946,7 @@ int slave_connection_read_timeout(struct slave_connection *cnx) {
 
 int slave_connection_write_timeout(struct slave_connection *cnx) {
 	
-	SLAVES_DBG("Write timeout with %s", socket_formated_peer_address(cnx->io.fd));
+	SLAVES_DBG("Write timeout with %s", socket_ntoa(cnx->io.fd));
 
 	/* disconnect from slave */
 	slave_connection_destroy(cnx);
@@ -2036,7 +2037,7 @@ void slave_connection_obj_destroy(struct slave_connection *cnx) {
 	}
 
 	if(cnx->volatile_config) {
-		config_destroy(cnx->volatile_config);
+		config_close(cnx->volatile_config);
 		cnx->volatile_config = NULL;
 	}
 
@@ -2131,7 +2132,7 @@ void slave_connection_obj_destroy(struct slave_connection *cnx) {
 
 	free(cnx);
 	
-	SLAVES_DBG("Disconnected in %I64u ms!", timer(time));
+	SLAVES_DBG("Disconnected in " LLU " ms!", timer(time));
 
 	return;
 }
@@ -2204,7 +2205,7 @@ struct slave_connection *slave_connection_new(int fd) {
 	cnx->mirror_from = collection_new(C_CASCADE);
 	cnx->mirror_to = collection_new(C_CASCADE);
 
-	cnx->volatile_config = config_new(NULL, 0);
+	cnx->volatile_config = config_volatile();
 	if(!cnx->volatile_config) {
 		collection_destroy(cnx->group);
 		collection_destroy(cnx->mirror_to);
@@ -2221,7 +2222,7 @@ struct slave_connection *slave_connection_new(int fd) {
 
 	if(!event_onSlaveConnect(cnx)) {
 		SLAVES_DBG("New slave rejected by onSlaveConnect");
-		config_destroy(cnx->volatile_config);
+		config_close(cnx->volatile_config);
 		collection_delete(connecting_slaves, cnx);
 		collection_destroy(cnx->group);
 		collection_destroy(cnx->mirror_to);

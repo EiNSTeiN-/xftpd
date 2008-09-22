@@ -33,18 +33,50 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "events.h"
-$#include "slaveselection.h"
+$#include "mirror.h"
 
 typedef struct {
-	void *ptr; // actual parameter
-	char *type; // parameter type name
-} event_parameter;
+	tolua_readonly bool finished;
+	tolua_readonly bool pasv;
+	
+	/* transfer checksum */
+	tolua_readonly unsigned int checksum;
+	tolua_readonly unsigned long long int xfered; /* current size that has been transfered, updated by the stats */
+	tolua_readonly unsigned long long int last_alive; /* last time it was reported by the stats */
 
-module event {
-	unsigned int event_register @ add(char *name, char *function);
+	tolua_readonly slave_connection *cnx; /* slave connection */
+	tolua_readonly vfs_element *file; /* transfered file */
+} mirror_side;
+
+typedef struct {
+	tolua_readonly collectible c @ collectible;
+	
+	tolua_readonly unsigned long long int uid; /* unique id shared with both slaves */
+	tolua_readonly unsigned long long int timestamp; /* transfer start */
+	
+	tolua_readonly config_file *volatile_config;
+
+	tolua_readonly mirror_side source;
+	tolua_readonly mirror_side target;
+} mirror_ctx;
+
+//typedef void* mirror_param;
+
+module mirrors {
+	extern collection *mirrors @ all;
+	
+	//custom: mirror_ctx *mirror_new @ create(
+	//	struct slave_connection *src_cnx,
+	//	struct vfs_element *src_file,
+	//	struct slave_connection *dest_cnx,
+	//	struct vfs_element *dest_file,
+	//	int (*callback)(struct mirror_ctx *mirror, int success, void *param),
+	//	void *param)
+	
+	bool mirror_cancel @ cancel(mirror_ctx *mirror);
 }
 
-module slaveselection {
-	unsigned int slaveselection_register @ add(char *name, char *function);
-}
+struct mirror_ctx {
+	tolua_outside bool mirror_cancel @ cancel();
+};
+

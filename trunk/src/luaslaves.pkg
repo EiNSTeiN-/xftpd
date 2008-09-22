@@ -1,0 +1,131 @@
+/*
+ * Copyright (c) 2007, The xFTPd Project.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *
+ *     * Neither the name of the xFTPd Project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ *     * Redistributions of this project or parts of this project in any form
+ *       must retain the following aknowledgment:
+ *       "This product includes software developed by the xFTPd Project.
+ *        http://www.xftpd.com/ - http://www.xftpd.org/"
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE xFTPd PROJECT ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE xFTPd PROJECT BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+$#include "slaves.h"
+
+typedef enum {
+	SLAVE_PLATFORM_WIN32
+} slave_platform;
+
+/* structure used to keep track of connected peers */
+typedef struct {
+	tolua_readonly collectible c @ collectible;
+	
+	tolua_readonly config_file *volatile_config;
+	
+	tolua_readonly slave_platform platform;
+	
+	tolua_readonly unsigned long long int rev @ revision;
+
+	tolua_readonly slave_ctx *slave;			/* NULL for not-ready slaves */
+
+	tolua_readonly unsigned long long int timestamp; /* time at wich the slave connected */
+	tolua_readonly unsigned long long int statstime; /* last time the stats have been asked */
+
+	/* utility information */
+	tolua_readonly unsigned long long int diskfree;
+	tolua_readonly unsigned long long int disktotal;
+
+	tolua_readonly unsigned long long int lagtime @ lag;
+
+	tolua_readonly collection *available_files @ files; /* collection of struct vfs_element : files available from that slave */
+	tolua_readonly collection *xfers; /* collection of struct _ftpd_client_context : currently xfering clients */
+} slave_connection;
+
+/* slave's hello data */
+typedef struct {
+	tolua_readonly unsigned long long int rev @ revision;
+	tolua_readonly unsigned long long int diskfree; /* this is the total of all mapped disks */
+	tolua_readonly unsigned long long int disktotal;
+	tolua_readonly const char *name;
+} hello_data;
+
+typedef struct {
+	tolua_readonly collectible c @ collectible;
+	
+	tolua_readonly config_file *config;
+	tolua_readonly char *name; /* name of the slave */
+	tolua_readonly unsigned long long int lastonline;
+
+	tolua_readonly slave_connection *cnx; /* NULL if the slave is not connected */
+	tolua_readonly collection *sections; /* collection of vfs_section added to this slave */
+} slave_ctx;
+
+module slaves {
+	extern collection *slaves @ all;
+	
+	extern collection *connecting_slaves @ connecting; /* slave_connection waiting to be identified */
+	extern collection *connected_slaves @ connected; /* slave_connection ready for i/o */
+
+	/* calculate the size used by the files on the slave */
+	unsigned long long int slave_files_size @ usedsize(slave_connection *cnx);
+
+	/* return the formated ip address associated with a slave connection */
+	ipaddress slave_ipaddress @ address(slave_connection *cnx);
+	
+	/* utility apis */
+	slave_ctx *slave_new @ add(const char *name);
+	slave_ctx *slave_get @ get(const char *name);
+
+	bool slave_dump @ save(slave_ctx *slave);
+	bool slave_delete @ delete(slave_ctx *slave);
+
+	void slave_connection_destroy @ kick(slave_connection *cnx);
+	
+	unsigned long long int slave_usage_from @ size_from(slave_connection *cnx, vfs_element *element);
+	
+	bool slave_set_virtual_root @ vroot(slave_ctx *slave, vfs_element *root);
+}
+
+struct slave_ctx {
+	tolua_outside bool slave_dump @ save();
+	tolua_outside bool slave_delete @ delete();
+	
+	tolua_outside bool slave_set_virtual_root @ vroot(vfs_element *root);
+};
+
+struct slave_connection {
+	/* calculate the size used by the files on the slave */
+	tolua_outside unsigned long long int slave_files_size @ usedsize();
+
+	/* return the formated ip address associated with a slave connection */
+	tolua_outside ipaddress slave_ipaddress @ address();
+	
+	tolua_outside void slave_connection_destroy @ kick();
+	
+	tolua_outside unsigned long long int slave_usage_from @ size_from(vfs_element *element);
+};
+
+

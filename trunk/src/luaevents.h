@@ -33,23 +33,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "timeout.h"
+#ifndef __LUAEVENTS_H
+#define __LUAEVENTS_H
 
-typedef struct {
-	collectible c @ collectible;
-	
-	unsigned long long int timestamp; /* time of the last call */
-	unsigned long long int timeout; /* timeout in milliseconds */
-	char *function; /* function to call */
-} timeout_ctx;
+#include <lualib.h>
+#include <lauxlib.h>
+#include <tolua++.h>
 
+#include "constants.h"
+#include "logging.h"
 
-module timeout {
-	extern _collection *timeouts @ all;
+TOLUA_API int luaopen_xftpd_events(lua_State* L);
 
-	unsigned int timeout_add @ set (char *function, unsigned long long int timeout, unsigned long long int start);
-	unsigned int timeout_del @ delete(char *function);
-
-	void timeout_clear @ clear();
-}
-
+#endif /* __LUAEVENTS_H */

@@ -33,35 +33,88 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "collection.h"
+#ifdef WIN32
+#include <windows.h>
+#endif
 
-typedef struct {
-	// this should stay an opaque structure to lua
-} _collection;
 
-typedef struct {
-	// this should stay an opaque structure to lua
-} collectible;
+#include "collection.h"
+#include "time.h"
+#include "constants.h"
+#include "luainit.h"
+#include "timer.h"
+#include "logging.h"
 
-typedef struct {
-	// this should stay an opaque structure to lua
-} collection_iterator;
+struct collection *timers = NULL; /* collection of struct timer_ctx */
 
-typedef enum {
-	C_NONE,
-	C_CASCADE
-} collection_destroy_type;
+int timer_init() {
 
-module collection {
-	_collection *collection_new @ new(collection_destroy_type destroy_type = C_NONE);
-	void collection_destroy @ destroy(_collection *c);
-	int collection_size @ size(_collection *c);
-	
-	int collection_c_add @ add(_collection *c, collectible *item);
-	int chk_collection_c_delete @ delete(_collection *c, collectible *item);
-	
-	collection_iterator *collection_new_iterator @ iterator(_collection *c);
-	collectible *collection_next @ iterate(_collection *c, collection_iterator *iter);
+	TIMER_DBG("Loading ...");
 
-	unsigned int collection_c_find @ find(_collection *c, collectible *item);
+	timers = collection_new(C_CASCADE);
+
+	return 1;
 }
+
+void timer_free() {
+
+	TIMER_DBG("Unloading ...");
+
+	collection_destroy(timers);
+	timers = NULL;
+
+	return;
+}
+
+/* clean all timer */
+void timer_clear() {
+
+	collection_empty(timers);
+
+	return;
+}
+
+static unsigned int timer_call_callback(struct collection *c, struct timer_ctx *to, void *param) {
+	lua_State *L = to->script->L;
+	
+	if((time_now() >= to->timestamp) && (timer(to->timestamp) >= to->timeout)) {
+		
+		to->timestamp = time_now();
+		
+		lua_pushcfunction(L, luainit_traceback);
+		
+		tolua_pushusertype(L,(void*)to,"timer_ctx");
+		
+		luainit_tget(L, TIMER_REFTABLE, to->function_index);
+		if(lua_isfunction(L, -1)) {
+			int err;
+			
+			/* call the function with two params and one return */
+			err = lua_pcall(L, 1, 1, -2);
+			if(err) {
+				/* do something with the error ... ? */
+				luainit_error(L, "(calling timer callback)", err);
+			} else {
+				/* do nothing */
+			}
+			
+			/* pops the error message or the return value */
+			lua_pop(L, 1);
+		} else {
+			/* pops the thing we just pushed that is not a function */
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1); /* pops the errfunc */
+	}
+
+	return 1;
+}
+
+/* call any timeout that need so */
+unsigned int timer_poll() {
+	
+	collection_iterate(timers, (collection_f)timer_call_callback, NULL);
+	
+	return 1;
+}
+

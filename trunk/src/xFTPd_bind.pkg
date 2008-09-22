@@ -46,25 +46,22 @@ module xFTPd {
 	void main_reload @ reload();
 }
 
-/*module luainit {
-	int luainit_dumpstate @ dumpstate(char *file);
-}*/
-
-$pfile "collection_bind.pkg"
-$pfile "events_bind.pkg"
-$pfile "config_bind.pkg"
-$pfile "irc_bind.pkg"
-$pfile "slaves_bind.pkg"
-$pfile "vfs_bind.pkg"
-$pfile "time_bind.pkg"
-$pfile "users_bind.pkg"
-$pfile "ftpd_bind.pkg"
-$pfile "sfv_bind.pkg"
-$pfile "timeout_bind.pkg"
-$pfile "mirror_bind.pkg"
-$pfile "site_bind.pkg"
-$pfile "nuke_bind.pkg"
-$pfile "update_bind.pkg"
+$pfile "luacollection.pkg"
+$pfile "luaconfig.pkg"
+$pfile "luaevents.pkg"
+$pfile "luaftpd.pkg"
+$pfile "luairc.pkg"
+$pfile "luamirror.pkg"
+$pfile "luanuke.pkg"
+$pfile "luasfv.pkg"
+$pfile "luasite.pkg"
+$pfile "luaslaves.pkg"
+$pfile "luatime.pkg"
+$pfile "luatimer.pkg"
+$pfile "luaupdate.pkg"
+$pfile "luausers.pkg"
+$pfile "luavfs.pkg"
+$pfile "luaskins.pkg"
 
 // include the xFTPd helper file
 $lfile "xFTPd.lua"

@@ -38,24 +38,19 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_ADIO
-#endif
-
-#ifdef DEBUG_ADIO
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define ADIO_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define ADIO_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_ADIO)
+# define ADIO_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define ADIO_DBG(format, arg...)
+# define ADIO_DBG(format, arg...)
 #endif
 
 struct adio_file {
 	unsigned int balance; /* running count of operations */
 #ifdef WIN32
 	HANDLE s; /* stream */
+#else
+  int s; /* file descriptor */
 #endif
 } __attribute__((packed));
 
@@ -68,18 +63,49 @@ struct adio_operation {
 	struct adio_file *file;
 #ifdef WIN32
 	OVERLAPPED ov;
+#else
+  int read; /* 1 if reading, 0 otherwise */
 #endif
 } __attribute__((packed));
 
+/*
+	Open the file 'filename' and return an adio_file structure
+	representing the open file. If create is set then the file
+	may not exist, otherwise the operation fail if the file is
+	not already created.
+*/
 struct adio_file *adio_open(const char *filename, int create);
-void adio_close(struct adio_file *adio);
-	
 
+/*
+	Destroy the adio_file structure.
+*/
+void adio_close(struct adio_file *adio);
+
+/*
+	Create a read operation on an opened file. If 'op' is not NULL then the already
+	created structure is reused.
+
+	The 'buffer' may change between calls with the same 'op'.
+*/
 struct adio_operation *adio_read(struct adio_file *file, char *buffer, unsigned long long int position,
 									unsigned int length, struct adio_operation *_op);
+
+/*
+	Same as adio_read but for write operations.
+*/
 struct adio_operation *adio_write(struct adio_file *file, char *buffer, unsigned long long int position,
 									unsigned int length, struct adio_operation *_op);
+
+/*
+	Probe the adio_operation structure. 'ready' is set to the currently available
+	number of bytes. Return 1 if the operation is complete, zero if there is still more
+	data to be read and -1 on error.
+*/
 int adio_probe(struct adio_operation *op, unsigned int *ready);
+
+/*
+	Destroy the adio_operation structure.
+*/
 void adio_complete(struct adio_operation *op);
 
 

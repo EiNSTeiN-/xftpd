@@ -38,40 +38,58 @@
 
 #include <lualib.h>
 #include <lauxlib.h>
-#include <tolua.h>
+#include <tolua++.h>
 
 #include "constants.h"
 #include "logging.h"
+#include "socket.h"
 
-/* disable tolua's function, we've got our own */
-#define TOLUA_DISABLE_tolua_xFTPd_bind_collection_iterate00
-
-#ifdef TOLUA_DISABLE_tolua_xFTPd_bind_collection_iterate00
-  int tolua_xFTPd_bind_collection_iterate00(lua_State* tolua_S);
-#endif
-
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_LUAINIT
-#endif
-
-#ifdef DEBUG_LUAINIT
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define LUAINIT_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define LUAINIT_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_LUAINIT)
+# define LUAINIT_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define LUAINIT_DBG(format, arg...)
+# define LUAINIT_DBG(format, arg...)
 #endif
 
-extern lua_State* L;
-
+//extern lua_State* L;
+/*
 int luainit_init();
 int luainit_reload();
 void luainit_free();
+*/
 
-int luainit_garbagecollect();
+lua_State *luainit_newstate();
+void luainit_freestate(lua_State *L);
 
-int luainit_dump();
+int luainit_loadfile(lua_State *L, const char *filename);
+int luainit_call(lua_State *L, const char *funcname);
+
+int luainit_traceback(lua_State *L);
+void luainit_error(lua_State *L, const char *location, int err);
+
+int luainit_metamethod(lua_State* L, const char *name, int (* func)(lua_State* L));
+
+void luainit_tcreate(lua_State* L, const char *table);
+int luainit_tinsert(lua_State* L, const char *table, int stack_idx);
+int luainit_tremove(lua_State* L, const char *table, int stack_idx);
+int luainit_tget(lua_State *L, const char *table, int stack_idx);
+
+int tolua_isfunction(lua_State* L, int lo, int def, tolua_Error* err);
+
+int luainit_pushipaddress(lua_State* L, ipaddress ip);
+
+#if !defined(bool)
+# define bool int
+#endif
+
+// this directive should definitely be stripped off by tolua while
+// transforming a .pkg file into a .c file, but turns out it's not.
+#if !defined(tolua_readonly)
+# define tolua_readonly 
+#endif
+
+#if !defined(tolua_outside)
+# define tolua_outside 
+#endif
 
 #endif /* __LUAINIT_H */

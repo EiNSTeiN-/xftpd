@@ -38,7 +38,11 @@
 #ifndef __ASPRINTF_H
 #define __ASPRINTF_H
 
+#ifdef WIN32
 #include <windows.h>
+#else
+#include <stdarg.h>
+#endif
 
 int asprintf(char **ret, const char *fmt, ...);
 int vasprintf(char **strp, const char *fmt, va_list ap);

@@ -36,24 +36,21 @@
 #ifndef __BLOWFISH_H
 #define __BLOWFISH_H
 
+#ifdef WIN32
 #include <windows.h>
+#else
+
+#endif
+
 #include <stdio.h>
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_BLOWFISH
-#endif
-
-#ifdef DEBUG_BLOWFISH
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define BLOWFISH_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  include "logging.h"
-#  define BLOWFISH_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_BLOWFISH)
+# define BLOWFISH_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define BLOWFISH_DBG(format, arg...)
+# define BLOWFISH_DBG(format, arg...)
 #endif
 
 #define bf_N			16

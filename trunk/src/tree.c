@@ -33,17 +33,23 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#else
+#include <stdlib.h>
+#include <string.h>
+#endif
+
 #include <stdio.h>
 
 #include "collection.h"
 #include "tree.h"
 
-static struct branch *find_branch(struct collection *branches, char *trigger, unsigned int any, char **args);
+static struct branch *find_branch(struct collection *branches, const char *trigger, unsigned int any, char **args);
 
 static int find_branch_callback(struct collection *c, struct branch *b, void *param) {
 	struct {
-		char *trigger;
+		const char *trigger;
 		unsigned int any;
 		struct branch *b;
 		char *args;
@@ -61,7 +67,7 @@ static int find_branch_callback(struct collection *c, struct branch *b, void *pa
 		*args = 0;
 		args++;
 
-		if(!stricmp(b->name, ptr)) {
+		if(!strcasecmp(b->name, ptr)) {
 
 			/* continue searching the sub-levels */
 			ctx->b = find_branch(b->branches, args, ctx->any, &ctx->args);
@@ -81,7 +87,7 @@ static int find_branch_callback(struct collection *c, struct branch *b, void *pa
 		}
 	} else {
 		/* we've reached the top level. */
-		if(!stricmp(b->name, ctx->trigger)) {
+		if(!strcasecmp(b->name, ctx->trigger)) {
 			ctx->b = b;
 			return 0;
 		}
@@ -91,9 +97,9 @@ static int find_branch_callback(struct collection *c, struct branch *b, void *pa
 }
 
 /* search a hook in a collection and return it */
-static struct branch *find_branch(struct collection *branches, char *trigger, unsigned int any, char **args) {
+static struct branch *find_branch(struct collection *branches, const char *trigger, unsigned int any, char **args) {
 	struct {
-		char *trigger;
+		const char *trigger;
 		unsigned int any;
 		struct branch *b;
 		char *args;
@@ -153,7 +159,7 @@ static void branch_obj_destroy(struct branch *b) {
 }
 
 /* add a hook to the collection */
-unsigned int tree_add(struct collection *branches, char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b)) {
+unsigned int tree_add(struct collection *branches, const char *trigger, struct collectible *cb, int (*cmp)(void *a, void *b)) {
 	struct branch *b;
 	char *ptr;
 
@@ -226,7 +232,7 @@ unsigned int tree_add(struct collection *branches, char *trigger, struct collect
 /* return a collection of all handlers available
 	for that trigger, wich SHOULD NOT BE KEPT across
 	calls */
-struct collection *tree_get(struct collection *branches, char *trigger, char **args) {
+struct collection *tree_get(struct collection *branches, const char *trigger, char **args) {
 	struct branch *b;
 
 	if(!branches || !trigger) return 0;

@@ -33,9 +33,12 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
-#include <poll.h>
+//#include <poll.h>
 
 #include "constants.h"
 
@@ -76,7 +79,7 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 
 	channel = malloc(sizeof(struct irc_channel));
 	if(!channel) {
-		IRC_DBG("Memory error");
+		IRCCORE_DBG("Memory error");
 		return 0;
 	}
 	
@@ -88,7 +91,7 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 
 	channel->name = strdup(name);
 	if(!channel->name) {
-		IRC_DBG("Memory error");
+		IRCCORE_DBG("Memory error");
 		free(channel);
 		return 0;
 	}
@@ -96,7 +99,7 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 	if(key) {
 		channel->key = strdup(key);
 		if(!channel->key) {
-			IRC_DBG("Memory error");
+			IRCCORE_DBG("Memory error");
 			free(channel->name);
 			free(channel);
 			return 0;
@@ -109,7 +112,7 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 	channel->groups = collection_new(C_CASCADE);
 
 	if(!collection_add(server->channels, channel)) {
-		IRC_DBG("Collection error");
+		IRCCORE_DBG("Collection error");
 		collection_destroy(channel->groups);
 		collection_destroy(channel->queue);
 		free(channel->name);
@@ -118,7 +121,7 @@ struct irc_channel *irc_channel_add(struct irc_server *server, char *name, char 
 		return NULL;
 	}
 
-	//IRC_DBG("Channel %s added", name);
+	//IRCCORE_DBG("Channel %s added", name);
 
 	return channel;
 }
@@ -138,7 +141,7 @@ unsigned int irc_raw(struct irc_server *server, const char *fmt, ...) {
 	l = ftpd_line_new(str);
 	if(l) {
 		if(!collection_add(server->queue, l)) {
-			IRC_DBG("Collection error");
+			IRCCORE_DBG("Collection error");
 		} else {
 			collection_movelast(server->queue, l);
 		}
@@ -157,7 +160,7 @@ static int get_channel_callback(struct collection *c, void *item, void *param) {
 		struct irc_channel *channel;
 	} *ctx = param;
 
-	if(!stricmp(ctx->channel_name, channel->name)) {
+	if(!strcasecmp(ctx->channel_name, channel->name)) {
 		ctx->channel = channel;
 	}
 
@@ -191,7 +194,7 @@ static unsigned int enqueue_message(struct collection *queue, char *fmt, ...) {
 	l = ftpd_line_new(str);
 	if(l) {
 		if(!collection_add(queue, l)) {
-			IRC_DBG("Collection error");
+			IRCCORE_DBG("Collection error");
 		} else {
 			collection_movelast(queue, l);
 		}
@@ -221,7 +224,7 @@ unsigned int irc_say(struct irc_server *server, char *channel_name, char *fmt, .
 			/* encrypt the blowfish message */
 			enc_message = blowfish_encrypt(&channel->blowfish, str);
 			if(!enc_message) {
-				IRC_DBG("memory error while encrypting blowfish message");
+				IRCCORE_DBG("memory error while encrypting blowfish message");
 				free(str);
 				return 1;
 			}
@@ -260,7 +263,7 @@ unsigned int irc_channel_add_group(struct irc_channel *channel, char *group) {
 	l = ftpd_line_new(group);
 	if(l) {
 		if(!collection_add(channel->groups, l)) {
-			IRC_DBG("Collection error");
+			IRCCORE_DBG("Collection error");
 			return 0;
 		}
 		return 1;
@@ -275,7 +278,7 @@ static int is_channel_in_group_callback(struct collection *c, struct ftpd_collec
 		char *group;
 	} *ctx = param;
 
-	if(!stricmp(group->line, ctx->group)) {
+	if(!strcasecmp(group->line, ctx->group)) {
 		ctx->success = 1;
 		return 0;
 	}
@@ -304,7 +307,7 @@ static int broadcast_group_callback(struct collection *c, struct irc_channel *ch
 		struct irc_server *server;
 	} *ctx = param;
 
-	if(!stricmp(ctx->target, "all") || is_channel_in_group(channel, ctx->target)) {
+	if(!strcasecmp(ctx->target, "all") || is_channel_in_group(channel, ctx->target)) {
 		if(!irc_say(&irccore_server, channel->name, "%s", ctx->message)) {
 			ctx->success = 0;
 			return 0;
@@ -339,7 +342,7 @@ unsigned int irc_broadcast_group(struct irc_server *server, char *group, char *m
 unsigned int irc_lua_broadcast(char *target, char *message) {
 
 	if(!target || !message) {
-		IRC_DBG("Parameter error");
+		IRCCORE_DBG("Parameter error");
 		return 0;
 	}
 
@@ -352,7 +355,7 @@ unsigned int irc_lua_broadcast(char *target, char *message) {
 unsigned int irc_lua_say(char *channel, char *message) {
 
 	if(!channel | !message) {
-		IRC_DBG("Parameter error");
+		IRCCORE_DBG("Parameter error");
 		return 0;
 	}
 
@@ -373,7 +376,7 @@ static unsigned int channel_exist_callback(struct collection *c, struct irc_chan
 		char *channel_name;
 	} *ctx = param;
 
-	if(!stricmp(ctx->channel_name, channel->name)) {
+	if(!strcasecmp(ctx->channel_name, channel->name)) {
 		ctx->success = 1;
 	}
 
@@ -401,127 +404,47 @@ static unsigned int call_command_handlers(struct collection *c, struct irc_handl
 		unsigned int notice;
 		char *args;
 	} *ctx = param;
-	lua_Number n;
 	struct irc_message m = { ctx->server, ctx->sender, ctx->target, ctx->args };
-	unsigned int err, i;
-	char *errval;
-	char *errmsg;
+	//unsigned int err;
+	unsigned int ret = 1;
+	lua_State *L = handler->script->L;
 	
-	if((handler->src == IRC_SOURCE_NOTICE) && !ctx->notice) {
-		/* want from notice but comming from somewhere else */
-		return 1;
-	}
+	/* want from notice but comming from somewhere else */
+	if((handler->src == IRC_SOURCE_NOTICE) && !ctx->notice) return 1;
 	
-	if((handler->src == IRC_SOURCE_CHANNEL) && (*ctx->target != '#')) {
-		/* want from channel but comming from private */
-		return 1;
-	}
+	/* want from channel but comming from private */
+	if((handler->src == IRC_SOURCE_CHANNEL) && (*ctx->target != '#')) return 1;
 	
-	if((handler->src == IRC_SOURCE_PRIVATE) && (*ctx->target == '#')) {
-		/* want from private but comming from channel */
-		return 1;
-	}
+	/* want from private but comming from channel */
+	if((handler->src == IRC_SOURCE_PRIVATE) && (*ctx->target == '#')) return 1;
 	
-	lua_pushstring(L, handler->handler);
-	lua_gettable(L, LUA_GLOBALSINDEX);
+	lua_pushcfunction(L, luainit_traceback);
 	
-	/* make sure the function has been found */
-	if(!lua_isfunction(L, -1)) {
-		IRC_DBG("\"%s\" is not a function", handler->handler);
-		lua_pop(L, 1);
-		return 1;
-	}
-	
-	/* push the parameters */
-	tolua_pushusertype(L, &m, "irc_message");
-	
-	err = lua_pcall(L, 1, 1, 0);
-	if(err) {
-		/*
-		LUA_ERRRUN --- a runtime error. 
-		LUA_ERRMEM --- memory allocation error. For such errors, Lua does not call the error handler function. 
-		LUA_ERRERR --- error while running the error handler function. 
-		*/
-		if(err == LUA_ERRRUN) errval = "runtime error";
-		else if(err == LUA_ERRMEM) errval = "memory allocation error";
-		else if(err == LUA_ERRERR) errval = "error while running the error handler function";
-		else errval = "unknown error";
-
-		errmsg = (char*)lua_tostring(L, -1);
-
-		IRC_DBG("error catched:");
-		IRC_DBG("  --> function: %s", handler->handler);
-		IRC_DBG("  --> error value: %s", errval);
-		IRC_DBG("  --> error message: %s", errmsg);
-
-		for(i=0;i<strlen(errmsg);i++)
-			if(errmsg[i] == '\r' || errmsg[i] == '\n') errmsg[i] = '.';
-
-		// hardcoded error message for all irc scripts
-		if(strchr(errmsg, ' ')) errmsg = strchr(errmsg, ' ');
-		irc_say(&irccore_server, ctx->target, "\2\3""14[\3 \3""4ERROR\3 \3""14]\3\2 %s\n", errmsg);
-	} else {
-		/* make sure the return value is a number */
-		if(!lua_isnumber(L, -1)) {
-			IRC_DBG("Returned non-number type from %s, dropping.", handler->handler);
-			lua_pop(L, 1);
-			return 1;
-		}
-
-		n = lua_tonumber(L, -1);
-
-		if(!(int)n) {
-			IRC_DBG("Got error from %s", handler->handler);
-		}
-	}
-	lua_pop(L, 1); /* pops the return value */
-	
-	return 1;
-}
-
-int irc_tree_cmp(struct irc_handler *a, struct irc_handler *b) {
-	
-	return stricmp(a->handler, b->handler);
-}
-
-static void irc_handler_obj_destroy(struct irc_handler *handler) {
-	
-	collectible_destroy(handler);
-	
-	free(handler->handler);
-	handler->handler = NULL;
-	
-	return;
-}
-
-unsigned int irc_tree_add(struct collection *branches, char *trigger, char *handler, irc_source src) {
-	struct irc_handler *handler_obj;
+	luainit_tget(L, IRCCORE_REFTABLE, handler->handler_index);
+	if(lua_isfunction(L, -1)) {
+		int err;
 		
-	handler_obj = malloc(sizeof(struct irc_handler));
-	if(!handler_obj) {
-		IRC_DBG("Memory error");
-		return 0;
+		/* push all params */
+		tolua_pushusertype(L, &m, "irc_message");
+		
+		/* call the function with two params and one return */
+		err = lua_pcall(L, 1, 1, -3);
+		if(err) {
+			/* do something with the error ... ? */
+			luainit_error(L, "(calling irc handler)", err);
+		} else {
+			ret = lua_isnumber(L, -1) ? (int)lua_tonumber(L, -1) : (int)tolua_toboolean(L, -1, ret);
+		}
+		
+		/* pops the error message or the return value */
+		lua_pop(L, 1);
+	} else {
+		/* pops the thing we just pushed that is not a function */
+		lua_pop(L, 1);
 	}
+	lua_pop(L, 1); /* pops the errfunc */
 	
-	obj_init(&handler_obj->o, handler_obj, (obj_f)irc_handler_obj_destroy);
-	collectible_init(handler_obj);
-	
-	handler_obj->handler = strdup(handler);
-	if(!handler_obj->handler) {
-		IRC_DBG("Memory error");
-		free(handler_obj);
-		return 0;
-	}
-	handler_obj->src = src;
-	
-	if(!tree_add(branches, trigger, &handler_obj->c, (tree_f)irc_tree_cmp)) {
-		IRC_DBG("Could not add handler object to tree");
-		free(handler_obj->handler);
-		free(handler_obj);
-		return 0;
-	}
-	
-	return 1;
+	return ret;
 }
 
 static int irc_handler_command_do_handlers(char *message, void *param) {
@@ -536,7 +459,7 @@ static int irc_handler_command_do_handlers(char *message, void *param) {
 	
 	handlers = tree_get(irc_hooks, message, &ctx->args);
 	if(!handlers) {
-		IRC_DBG("No handler for command %s", message);
+		IRCCORE_DBG("No handler for command %s", message);
 		return 0;
 	}
 	
@@ -568,7 +491,7 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 	if(*target != '#') {
 		ctx.target = strdup(sender);
 		if(!ctx.target) {
-			IRC_DBG("Memory error");
+			IRCCORE_DBG("Memory error");
 			return 0;
 		}
 
@@ -577,14 +500,14 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 	}
 
 	/* skip the command prefix */
-	if(!strnicmp(message, irc_prefix, strlen(irc_prefix))) {
+	if(!strncasecmp(message, irc_prefix, strlen(irc_prefix))) {
 		message += strlen(irc_prefix);
 		
 		if(!irc_handler_command_do_handlers(message, &ctx)) {
 			if(*target != '#') free(ctx.target);
 			return 1;
 		}
-	} else if(!strnicmp(message, "+OK ", 4) || !strnicmp(message, "mcps ", 5)) {
+	} else if(!strncasecmp(message, "+OK ", 4) || !strncasecmp(message, "mcps ", 5)) {
 		struct irc_channel *channel;
 		
 		message = strchr(message, ' ')+1;
@@ -600,9 +523,9 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 			
 			dec_message = blowfish_decrypt(&channel->blowfish, message);
 			if(!dec_message) {
-				IRC_DBG("memory error when decrypting blowfish message");
+				IRCCORE_DBG("memory error when decrypting blowfish message");
 			} else {
-				if(!strnicmp(dec_message, irc_prefix, strlen(irc_prefix))) {
+				if(!strncasecmp(dec_message, irc_prefix, strlen(irc_prefix))) {
 					char *tmp = dec_message;
 					tmp += strlen(irc_prefix);
 					
@@ -620,7 +543,7 @@ static unsigned int irc_handle_command(struct irc_server *server, char *sender, 
 				dec_message = NULL;
 			}
 		} else {
-			IRC_DBG("Channel not found or channel not using blowfish (%s)", target);
+			IRCCORE_DBG("Channel not found or channel not using blowfish (%s)", target);
 		}
 	}
 	
@@ -638,7 +561,7 @@ static int mark_channel_joined_callback(struct collection *c, struct irc_channel
 		unsigned int joined;
 	} *ctx = param;
 
-	if(!stricmp(ctx->channel_name, channel->name)) {
+	if(!strcasecmp(ctx->channel_name, channel->name)) {
 		channel->joined = ctx->joined;
 		ctx->success = 1;
 	}
@@ -671,12 +594,12 @@ static int irc_handle_nick(struct irc_server *server, char* sender, char* nick) 
 		if((*(sender+i) == '!') || (*(sender+i) == '@')) break;
 
 	/* if we're the sender */
-	if(!strnicmp(sender, server->nickname, i)) {
+	if(!strncasecmp(sender, server->nickname, i)) {
 		/* update our nickname internally */
 		free(server->nickname);
 		server->nickname = strdup(nick);
 		if(!server->nickname) {
-			IRC_DBG("Memory error");
+			IRCCORE_DBG("Memory error");
 			return 0;
 		}
 	}
@@ -691,7 +614,7 @@ static int irc_handle_nick(struct irc_server *server, char* sender, char* nick) 
 	params[1].ptr = &ctx;
 	params[1].type = "irc_nick_change";
 
-	IRC_DBG("onIrcNickChange (%s, %s)", sender, nick);
+	IRCCORE_DBG("onIrcNickChange (%s, %s)", sender, nick);
 
 	event_raise("onIrcNickChange", 2, &params[0]);
 
@@ -713,14 +636,9 @@ static int irc_handle_join(struct irc_server *server, char* sender, char* channe
 		if((*(sender+i) == '!') || (*(sender+i) == '@')) break;
 
 	/* if we're the sender */
-	if(!strnicmp(sender, server->nickname, i)) {
+	if(!strncasecmp(sender, server->nickname, i)) {
 		if(irc_channel_exist(server, channel)) {
 			mark_channel_joined(server, channel, 1);
-
-			/* Advertise "powered by www.xFTPd.com" */
-#ifndef NO_IRC_ADVERTISEMENT
-			irc_say(server, channel, "This server is powered by www.xFTPd.com !");
-#endif
 		} else {
 			/* we're not on that channel - leave it */
 			irc_raw(server, "PART %s\n", channel);
@@ -738,7 +656,7 @@ static int irc_handle_join(struct irc_server *server, char* sender, char* channe
 	params[1].ptr = &ctx;
 	params[1].type = "irc_join_channel";
 
-	IRC_DBG("onIrcJoinChannel (%s, %s)", sender, channel);
+	IRCCORE_DBG("onIrcJoinChannel (%s, %s)", sender, channel);
 
 	event_raise("onIrcJoinChannel", 2, &params[0]);
 
@@ -758,7 +676,7 @@ static int irc_handle_part(struct irc_server *server, char* sender, char* channe
 	for(i=0;i<strlen(sender);i++)
 		if((*(sender+i) == '!') || (*(sender+i) == '@')) break;
 
-	if(!strnicmp(sender, server->nickname, i)) {
+	if(!strncasecmp(sender, server->nickname, i)) {
 		mark_channel_joined(server, channel, 0);
 	}
 	
@@ -772,7 +690,7 @@ static int irc_handle_part(struct irc_server *server, char* sender, char* channe
 	params[1].ptr = &ctx;
 	params[1].type = "irc_part_channel";
 
-	IRC_DBG("onIrcPartChannel (%s, %s)", sender, channel);
+	IRCCORE_DBG("onIrcPartChannel (%s, %s)", sender, channel);
 
 	event_raise("onIrcPartChannel", 2, &params[0]);
 
@@ -787,7 +705,7 @@ static int irc_handle_kick(struct irc_server *server, char* sender, char* user, 
 	struct event_parameter params[2];
 	struct irc_kick_user ctx;
 	
-	if(!stricmp(user, server->nickname)) {
+	if(!strcasecmp(user, server->nickname)) {
 		mark_channel_joined(server, channel, 0);
 	}
 	
@@ -802,7 +720,7 @@ static int irc_handle_kick(struct irc_server *server, char* sender, char* user, 
 	params[1].ptr = &ctx;
 	params[1].type = "irc_kick_user";
 
-	IRC_DBG("onIrcKickUser (%s, %s, %s)", sender, user, channel);
+	IRCCORE_DBG("onIrcKickUser (%s, %s, %s)", sender, user, channel);
 
 	event_raise("onIrcKickUser", 2, &params[0]);
 
@@ -823,7 +741,7 @@ static int irc_handle_quit(struct irc_server *server, char* sender) {
 	params[1].ptr = &ctx;
 	params[1].type = "irc_quit";
 
-	IRC_DBG("onIrcQuit (%s)", sender);
+	IRCCORE_DBG("onIrcQuit (%s)", sender);
 
 	event_raise("onIrcQuit", 2, &params[0]);
 
@@ -838,7 +756,7 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 	char *nickname;
 	char *s[32];
 
-	if(!strnicmp(line, "PING", 4)) {
+	if(!strncasecmp(line, "PING", 4)) {
 		return irc_raw(server, "PONG%s\n", &line[4]);
 	}
 
@@ -864,7 +782,7 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 		//Jack say something in the channel #Josh
 		//":Jack!ident@hostname PRIVMSG #Josh :message"
 		irc_handle_command(server, s[0], 0, s[2], s[3]);
-	} else if(!stricmp(s[1], "NOTICE")) {		// handle any notice message
+	} else if(!strcasecmp(s[1], "NOTICE")) {		// handle any notice message
 		//Jack send a notice to John
 		//":Jack!ident@hostname NOTICE John :message"
 		irc_handle_command(server, s[0], 1, s[2], s[3]);
@@ -904,7 +822,7 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 			params[0].ptr = server;
 			params[0].type = "irc_server";
 			
-			IRC_DBG("onIrcConnect");
+			IRCCORE_DBG("onIrcConnect");
 			
 			event_raise("onIrcConnect", 1, &params[0]);
 			
@@ -912,7 +830,7 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 		}
 		case 432: //erroneous nickname: illegal characters
 			//we don't want an assigned nickname if it's erroneous
-			IRC_DBG("The server rejected \"%s\" as a nickname.", server->nickname);
+			IRCCORE_DBG("The server rejected \"%s\" as a nickname.", server->nickname);
 
 			/* free the server address so we won't get reconnected */
 			free(server->address);
@@ -926,13 +844,13 @@ unsigned int irc_handle(struct irc_server *server, const char *line) {
 
 			nickname = malloc(strlen(server->nickname)+2);
 			if(!nickname) {
-				IRC_DBG("Memory error");
+				IRCCORE_DBG("Memory error");
 				free(s[0]);
 				return 0;
 			}
 			sprintf(nickname, "%s`", server->nickname);
 			
-			IRC_DBG("\"%s\" is already taken, using \"%s\".", server->nickname, nickname);
+			IRCCORE_DBG("\"%s\" is already taken, using \"%s\".", server->nickname, nickname);
 
 			//just add a ` to the nickname so the server will leave us alone
 			free(server->nickname);
@@ -957,16 +875,22 @@ static unsigned int parse_line_from_master(struct irc_server *server) {
 		tryagain = 0;
 		recvd = secure_recv(&server->secure, &server->buffer[server->filled_length], 1, &tryagain);
 		if((recvd == -1) && tryagain) {
-			IRC_DBG("Could NOT read a line (will try again!)");
+			IRCCORE_DBG("Could NOT read a line (will try again!)");
 			break;
 		}
-		if((recvd == -1) && (WSAGetLastError() == WSAEWOULDBLOCK)) {
+		if((recvd == -1) &&
+#ifdef WIN32
+		  (WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+      (errno == EWOULDBLOCK)
+#endif
+		) {
 			/* no more data available? */
-			IRC_DBG("No more data available to be read from socket, %u filled.", server->filled_length);
+			IRCCORE_DBG("No more data available to be read from socket, %u filled.", server->filled_length);
 			break;
 		}
 		if(recvd != 1) {
-			IRC_DBG("Could not receive from socket.");
+			IRCCORE_DBG("Could not receive from socket.");
 			return 0;
 		}
 		
@@ -978,7 +902,7 @@ static unsigned int parse_line_from_master(struct irc_server *server) {
 			server->buffer[server->filled_length] = 0;
 			
 			if(!irc_handle(server, server->buffer)) {
-				IRC_DBG("Could not handle command from server.");
+				IRCCORE_DBG("Could not handle command from server.");
 				return 0;
 			}
 			
@@ -988,7 +912,7 @@ static unsigned int parse_line_from_master(struct irc_server *server) {
 		
 		server->filled_length++;
 		if(server->filled_length == sizeof(server->buffer)) {
-			IRC_DBG("Server sent a line that is too big to be handled (over %u bytes).", sizeof(server->buffer));
+			IRCCORE_DBG("Server sent a line that is too big to be handled (over %u bytes).", sizeof(server->buffer));
 			return 0;
 		}
 	}
@@ -1011,13 +935,13 @@ static int send_from_queue_callback(struct collection *c, struct ftpd_collectibl
 
 	i = secure_send(&ctx->server->secure, l->line, size, &tryagain);
 	if((i == -1) && tryagain) {
-		IRC_DBG("Could NOT send the current line (will try again!)");
+		IRCCORE_DBG("Could NOT send the current line (will try again!)");
 		ctx->server->timestamp = time_now();
 		return 0;
 	}
 	
 	if(i != size) {
-		IRC_DBG("ERROR: Line size mismatch sent size (expected: %u, sent: %d)", size, i);
+		IRCCORE_DBG("ERROR: Line size mismatch sent size (expected: %u, sent: %d)", size, i);
 		ctx->success = 0;
 	}
 
@@ -1056,7 +980,7 @@ static int send_from_channel_queue_callback(struct collection *c, struct irc_cha
 				channel->key ? " " : "",
 				channel->key ? channel->key : ""
 			);
-			IRC_DBG("joining channel %s with key %s", channel->name, channel->key ? channel->key : ""); 
+			IRCCORE_DBG("joining channel %s with key %s", channel->name, channel->key ? channel->key : ""); 
 			channel->timestamp = time_now();
 		}
 		/* return 1 so we'll still try to send a message if any exists */
@@ -1096,12 +1020,12 @@ int irccore_server_secure_write(int fd, struct irc_server *server) {
 	if(!server->connected) {
 		unsigned int i;
 		
-		IRC_DBG("Now connected to %s:%u.", server->address, server->port);
+		IRCCORE_DBG("Now connected to %s:%u.", server->address, server->port);
 		
 		/* now we can send/receive something */
 		
 		i = 1;
-		setsockopt(server->s, SOL_SOCKET, SO_KEEPALIVE, (char *)&i, sizeof(BOOL));
+		setsockopt(server->s, SOL_SOCKET, SO_KEEPALIVE, (char *)&i, sizeof(int));
 		
 		/* enqueue the USER line */
 		irc_raw(server,
@@ -1122,14 +1046,14 @@ int irccore_server_secure_write(int fd, struct irc_server *server) {
 	if(collection_size(server->queue) && (timer(server->timestamp) > server->delay)) {
 		/* try to send data from the global queue */
 		if(!send_from_queue(server, server->queue)) {
-			IRC_DBG("Could not send anything from server queue.");
+			IRCCORE_DBG("Could not send anything from server queue.");
 			irc_disconnect(server);
 			return 0;
 		}
 	} else {
 		/* try to send data from any channel queue */
 		if(!send_from_channels(server)) {
-			IRC_DBG("Could not send anything to channel.");
+			IRCCORE_DBG("Could not send anything to channel.");
 			irc_disconnect(server);
 			return 0;
 		}
@@ -1142,7 +1066,7 @@ int irccore_server_secure_read(int fd, struct irc_server *server) {
 
 	/* read a line & parse it */
 	if(!parse_line_from_master(server)) {
-		IRC_DBG("Could not parse a line from master.");
+		IRCCORE_DBG("Could not parse a line from master.");
 		irc_disconnect(server);
 		return 0;
 	}
@@ -1152,17 +1076,17 @@ int irccore_server_secure_read(int fd, struct irc_server *server) {
 
 int irccore_server_secure_connect(int fd, struct irc_server *server) {
 	
-	IRC_DBG("SSL Negotiation completed with success.");
+	IRCCORE_DBG("SSL Negotiation completed with success.");
 	
-	IRC_DBG("SSL Using Ciphers: %s", SSL_get_cipher_name(server->secure.ssl));
-	IRC_DBG("SSL Connection Protocol: %s", SSL_get_cipher_version(server->secure.ssl));
+	IRCCORE_DBG("SSL Using Ciphers: %s", SSL_get_cipher_name(server->secure.ssl));
+	IRCCORE_DBG("SSL Connection Protocol: %s", SSL_get_cipher_version(server->secure.ssl));
 	
 	return 1;
 }
 
 int irccore_server_secure_error(int fd, struct irc_server *server) {
 	
-	IRC_DBG("SSL Negotiation could not be completed!");
+	IRCCORE_DBG("SSL Negotiation could not be completed!");
 	
 	return 1;
 }
@@ -1181,38 +1105,38 @@ int irccore_load_config() {
 	/* if we can't read the hostname, disable the ircbot */
 	irccore_server.address = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.address", NULL);
 	if(!irccore_server.address) {
-		IRC_DBG("xftpd.irc.address is not set.");
+		IRCCORE_DBG("xftpd.irc.address is not set.");
 		return 0;
 	}
 	
 	i = config_raw_read_int(MASTER_CONFIG_FILE, "xftpd.irc.port", 6667);
 	if(!i || (i & 0xffff0000)) {
-		IRC_DBG("xftpd.irc.port must be between 1-65535, defaulting to 6667");
+		IRCCORE_DBG("xftpd.irc.port must be between 1-65535, defaulting to 6667");
 		i = 6667;
 	}
 	irccore_server.port = (short)i;
 
 	irccore_server.nickname = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.nickname", "xFTPd_bot");
 	if(!irccore_server.nickname)  {
-		IRC_DBG("xftpd.irc.nickname is not set.");
+		IRCCORE_DBG("xftpd.irc.nickname is not set.");
 		return 0;
 	}
 
 	irccore_server.realname = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.realname", "xFTPd");
 	if(!irccore_server.realname) {
-		IRC_DBG("xftpd.irc.realname is not set.");
+		IRCCORE_DBG("xftpd.irc.realname is not set.");
 		return 0;
 	}
 
 	irccore_server.ident = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.ident", "xFTPd");
 	if(!irccore_server.ident) {
-		IRC_DBG("xftpd.irc.ident is not set.");
+		IRCCORE_DBG("xftpd.irc.ident is not set.");
 		return 0;
 	}
 
 	irc_prefix = config_raw_read(MASTER_CONFIG_FILE, "xftpd.irc.prefix", "!");
 	if(!irc_prefix) {
-		IRC_DBG("xftpd.irc.prefix is not set.");
+		IRCCORE_DBG("xftpd.irc.prefix is not set.");
 		return 0;
 	}
 
@@ -1247,8 +1171,8 @@ int irccore_load_config() {
 			}
 			channel->use_blowfish = 0;
 			if(blowfish_key) {
-				if(!blowfish_init(&channel->blowfish, blowfish_key, strlen(blowfish_key))) {
-					IRC_DBG("Could not initialize blowfish key for channel %s", name);
+				if(!blowfish_init(&channel->blowfish, (unsigned char *)blowfish_key, strlen(blowfish_key))) {
+					IRCCORE_DBG("Could not initialize blowfish key for channel %s", name);
 				} else {
 					channel->use_blowfish = 1;
 				}
@@ -1262,19 +1186,19 @@ int irccore_load_config() {
 		free(key);
 	}
 
-	IRC_DBG("Loaded %u channel(s).", collection_size(irccore_server.channels));
+	IRCCORE_DBG("Loaded %u channel(s).", collection_size(irccore_server.channels));
 
 	return 1;
 }
 
 int irccore_server_read_timeout(struct irc_server *server) {
 
-	IRC_DBG("Server connection read error");
+	IRCCORE_DBG("Server connection read error");
 
 	irc_disconnect(server);
 
 	if(!irc_connect(server)) {
-		IRC_DBG("Could not reconnect to server");
+		IRCCORE_DBG("Could not reconnect to server");
 		main_fatal();
 		return 0;
 	}
@@ -1283,12 +1207,12 @@ int irccore_server_read_timeout(struct irc_server *server) {
 }
 int irccore_server_write_timeout(struct irc_server *server) {
 
-	IRC_DBG("Server connection read error");
+	IRCCORE_DBG("Server connection read error");
 
 	irc_disconnect(server);
 
 	if(!irc_connect(server)) {
-		IRC_DBG("Could not reconnect to server");
+		IRCCORE_DBG("Could not reconnect to server");
 		main_fatal();
 		return 0;
 	}
@@ -1299,7 +1223,7 @@ int irccore_server_write_timeout(struct irc_server *server) {
 int irccore_server_connect(int fd, struct irc_server *server) {
 	struct signal_callback *s;
 
-	IRC_DBG("Server is now connected.");
+	IRCCORE_DBG("Server is now connected.");
 
 	/* set the socket setting */
 	socket_set_max_read(fd, IRC_SOCKET_SIZE);
@@ -1329,7 +1253,7 @@ int irccore_server_connect(int fd, struct irc_server *server) {
 
 	/* if we should use ssl for this server, then start the negotiation right now */
 	if(server->use_ssl) {
-		IRC_DBG("Starting SSL Negotiation.");
+		IRCCORE_DBG("Starting SSL Negotiation.");
 		secure_negotiate(&server->secure);
 		return 1;
 	}
@@ -1339,12 +1263,12 @@ int irccore_server_connect(int fd, struct irc_server *server) {
 
 int irccore_server_error(int fd, struct irc_server *server) {
 
-	IRC_DBG("Server connection error");
+	IRCCORE_DBG("Server connection error");
 
 	irc_disconnect(server);
 
 	if(!irc_connect(server)) {
-		IRC_DBG("Could not reconnect to server");
+		IRCCORE_DBG("Could not reconnect to server");
 		main_fatal();
 		return 0;
 	}
@@ -1354,12 +1278,12 @@ int irccore_server_error(int fd, struct irc_server *server) {
 
 int irccore_server_close(int fd, struct irc_server *server) {
 
-	IRC_DBG("Server connection closed");
+	IRCCORE_DBG("Server connection closed");
 
 	irc_disconnect(server);
 
 	if(!irc_connect(server)) {
-		IRC_DBG("Could not reconnect to server");
+		IRCCORE_DBG("Could not reconnect to server");
 		main_fatal();
 		return 0;
 	}
@@ -1372,7 +1296,7 @@ int irc_connect(struct irc_server *server) {
 	/* setup the socket */
 	server->s = connect_to_host_non_blocking(server->address, server->port);
 	if(server->s == -1) {
-		IRC_DBG("Socket error");
+		IRCCORE_DBG("Socket error");
 		return 0;
 	}
 	server->connected = 0;
@@ -1420,10 +1344,10 @@ void irc_disconnect(struct irc_server *server) {
 
 int irccore_init() {
 
-	IRC_DBG("Loading...");
+	IRCCORE_DBG("Loading...");
 
 	irc_hooks = collection_new(C_CASCADE);
-
+	
 	irccore_server.queue = collection_new(C_CASCADE);
 	irccore_server.channels = collection_new(C_CASCADE);
 
@@ -1449,7 +1373,7 @@ int irccore_init() {
 	irccore_server.timestamp = 0;
 
 	if(!irccore_load_config()) {
-		IRC_DBG("THE IRC CONFIG COULD NOT BE LOADED, NO SITEBOT AVAILABLE.");
+		IRCCORE_DBG("THE IRC CONFIG COULD NOT BE LOADED, NO SITEBOT AVAILABLE.");
 		return 1;
 	}
 	
@@ -1460,11 +1384,11 @@ int irccore_init() {
 
 #ifdef MASTER_WITH_IRC_CLIENT
 	if(!irc_connect(&irccore_server)) {
-		IRC_DBG("Could not make the irc server connect.");
+		IRCCORE_DBG("Could not make the irc server connect.");
 		return 0;
 	}
 #else
-	IRC_DBG("Compiled without IRC client!");
+	IRCCORE_DBG("Compiled without IRC client!");
 #endif
 
 	return 1;
@@ -1472,7 +1396,7 @@ int irccore_init() {
 
 void irccore_free(struct irc_ctx *ctx) {
 
-	IRC_DBG("Unloading...");
+	IRCCORE_DBG("Unloading...");
 
 	irc_disconnect(&irccore_server);
 	
@@ -1490,7 +1414,7 @@ void irccore_free(struct irc_ctx *ctx) {
 /* delete all hooks */
 int irccore_reload(struct irc_ctx *ctx) {
 
-	IRC_DBG("Reloading...");
+	IRCCORE_DBG("Reloading...");
 
 	/* remove all handlers in the tree */
 	tree_destroy(irc_hooks);

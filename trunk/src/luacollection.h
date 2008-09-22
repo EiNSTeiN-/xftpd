@@ -33,11 +33,16 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <windows.h>
+#ifndef __LUACOLLECTION_H
+#define __LUACOLLECTION_H
 
-#include "search.h"
+#include <lualib.h>
+#include <lauxlib.h>
+#include <tolua++.h>
 
-/*
-	Not yet complete
-*/
+#include "constants.h"
+#include "logging.h"
 
+TOLUA_API int luaopen_xftpd_collection(lua_State* L);
+
+#endif /* __LUACOLLECTION_H */

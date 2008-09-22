@@ -33,7 +33,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
 
 #include "logging.h"
 #include "ftpd.h"
@@ -45,6 +47,7 @@
 #include "time.h"
 #include "users.h"
 #include "mirror.h"
+#include "luainit.h"
 
 /*
 	Holds all signals.
@@ -68,7 +71,7 @@ static struct collection *events = NULL; /* event_ctx */
 
 static unsigned int event_get_matcher(struct collection *c, struct event_ctx *ctx, char *name) {
 
-	return !stricmp(ctx->name, name);
+	return !strcasecmp(ctx->name, name);
 }
 
 struct event_ctx *event_get(const char *name) {
@@ -125,167 +128,65 @@ struct event_ctx *event_create(const char *name) {
 	return ctx;
 }
 
+/*
 static unsigned int event_get_callback_matcher(struct collection *c, struct event_callback *cb, char *function) {
 
-	return !stricmp(cb->function, function);
+	return !strcasecmp(cb->function, function);
 }
+*/
 
 static void event_callback_obj_destroy(struct event_callback *cb) {
 	
 	collectible_destroy(cb);
 	
-	free(cb->function);
-	cb->function = NULL;
+	if(cb->function_index != -1 && cb->script && cb->script->L) {
+		luainit_tremove(cb->script->L, EVENTS_REFTABLE, cb->function_index);
+	} else {
+		EVENTS_DBG("Can't free function_index %d", cb->function_index);
+	}
+	cb->function_index = -1;
 
 	free(cb);
 	
 	return;
 }
 
-struct event_callback *event_get_callback(struct event_ctx *ctx, const char *function, int create) {
+struct event_callback *event_add_callback(struct event_ctx *ctx, struct script_ctx *script, int function_index) {
 	struct event_callback *cb;
-
-	if(!function) return NULL;
-
-	cb = collection_match(ctx->callbacks, (collection_f)event_get_callback_matcher, (void *)function);
-	if(!cb && create) {
-		
-		//EVENTS_DBG("Adding %s to callbacks of %s", function, ctx->name);
-
-		cb = malloc(sizeof(struct event_callback));
-		if(!cb) {
-			EVENTS_DBG("Memory error");
-			return NULL;
-		}
 	
-		obj_init(&cb->o, cb, (obj_f)event_callback_obj_destroy);
-		collectible_init(cb);
+	if(function_index == -1) return NULL;
 
-		cb->function = strdup(function);
-		if(!cb->function) {
-			EVENTS_DBG("Memory error");
-			free(ctx);
-			return NULL;
-		}
-
-		if(!collection_add(ctx->callbacks, cb)) {
-			EVENTS_DBG("Collection error");
-			free(cb->function);
-			free(cb);
-			return NULL;
-		}
+	cb = malloc(sizeof(struct event_callback));
+	if(!cb) {
+		EVENTS_DBG("Memory error");
+		return NULL;
 	}
-
+	
+	obj_init(&cb->o, cb, (obj_f)event_callback_obj_destroy);
+	collectible_init(cb);
+	
+	cb->script = script;
+	cb->function_index = function_index;
+	
+	if(!collection_add(cb->script->events, cb)) {
+		EVENTS_DBG("Collection error");
+		cb->function_index = -1;
+		free(cb);
+		return NULL;
+	}
+	
+	if(!collection_add(ctx->callbacks, cb)) {
+		EVENTS_DBG("Collection error");
+		collection_delete(cb->script->events, cb);
+		cb->function_index = -1;
+		free(cb);
+		return NULL;
+	}
+	
 	return cb;
 }
 
-static int event_signal_lua_callback(struct collection *c, struct event_callback *cb, void *param) {
-	struct {
-		struct event_object *object;
-		int status;
-	} *ctx = param;
-
-	int stacktop = lua_gettop(L);
-	char *errval, *errmsg;
-	unsigned int i, err;
-	lua_Number n;
-
-	//unsigned int gc_count = lua_getgccount(L);
-	
-	lua_pushstring(L, cb->function);
-	lua_gettable(L, LUA_GLOBALSINDEX);
-
-	/* make sure the function has been found */
-	if(!lua_isfunction(L, -1)) {
-		EVENTS_DBG("%s is not a function", cb->function);
-		lua_pop(L, 1);
-		if(stacktop != lua_gettop(L)) {
-			EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-		}
-		//luainit_garbagecollect();
-		return 1;
-	}
-
-	/* push the parameters */
-	for(i=0;i<ctx->object->param_count;i++) {
-		tolua_pushusertype(L, ctx->object->params[i].ptr, ctx->object->params[i].type);
-	}
-
-	err = lua_pcall(L, ctx->object->param_count, 1, 0);
-	if(err) {
-		/*
-		LUA_ERRRUN --- a runtime error. 
-		LUA_ERRMEM --- memory allocation error. For such errors, Lua does not call the error handler function. 
-		LUA_ERRERR --- error while running the error handler function. 
-		*/
-		if(err == LUA_ERRRUN) errval = "runtime error";
-		else if(err == LUA_ERRMEM) errval = "memory allocation error";
-		else if(err == LUA_ERRERR) errval = "error while running the error handler function";
-		else errval = "unknown error";
-
-		errmsg = (char*)lua_tostring(L, -1);
-
-		EVENTS_DBG("error catched:");
-		EVENTS_DBG("  --> function: %s", cb->function);
-		EVENTS_DBG("  --> error value: %s", errval);
-		EVENTS_DBG("  --> error message: %s", errmsg);
-	} else {
-
-		/* make sure the return value is a number */
-		if(!lua_isnumber(L, -1)) {
-			EVENTS_DBG("[%s] returned non-number type, dropping.", cb->function);
-			lua_pop(L, 1);
-			if(stacktop != lua_gettop(L)) {
-				EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-			}
-			//luainit_garbagecollect();
-			return 1;
-		}
-
-		n = lua_tonumber(L, -1);
-
-		if(!(int)n) {
-			ctx->status = 0;
-			lua_pop(L, 1); /* pops the return value */
-			if(stacktop != lua_gettop(L)) {
-				EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-			}
-			//luainit_garbagecollect();
-			return 0;
-		}
-	}
-
-	lua_pop(L, 1); /* pops the return value */
-	if(stacktop != lua_gettop(L)) {
-		EVENTS_DBG("ERROR: prev stack top mismatch current stack top (%d, was %d)!", lua_gettop(L), stacktop);
-	}
-	//luainit_garbagecollect();
-
-	return 1;
-}
-
-int event_signal_callback(struct event_object *object, struct event_ctx *event) {
-	struct {
-		struct event_object *object;
-		int status;
-	} ctx = { object, 1 };
-
-	if(object->param_count && !object->params) {
-		EVENTS_DBG("%s could not be raised, param error.", event->name);
-		return 1;
-	}
-
-	collection_iterate(event->callbacks, (collection_f)event_signal_lua_callback, &ctx);
-	object->ret.success = ctx.status;
-
-	/*if(lua_gcmonitor()) {
-		EVENTS_DBG("%u Kbytes for LUA with %u threshold.", current_gc_count, current_gc_threshold);
-	}*/
-
-	return 1;
-}
-
-struct signal_callback *event_signal_add(char *name, int (*callback)(void *obj, void *param), void *param) {
+struct signal_callback *event_signal_add(const char *name, int (*callback)(void *obj, void *param), void *param) {
 
 	if(!event_signals) {
 		event_signals = collection_new(C_CASCADE);
@@ -296,40 +197,6 @@ struct signal_callback *event_signal_add(char *name, int (*callback)(void *obj, 
 
 	/* register this callback so we'll have it called on this event */
 	return signal_add(event_signals, event_group, name, callback, param);
-}
-
-int event_register(char *name, char *function) {
-	struct event_ctx *ctx;
-
-	if(!name || !function) return 0;
-	
-
-	if(!event_signals) {
-		event_signals = collection_new(C_CASCADE);
-	}
-	if(!event_group) {
-		event_group = collection_new(C_CASCADE);
-	}
-	if(!events) {
-		events = collection_new(C_CASCADE);
-	}
-
-	ctx = event_get(name);
-	if(!ctx) {
-		ctx = event_create(name);
-		if(!ctx) {
-			EVENTS_DBG("Memory error");
-			return 0;
-		}
-
-		/* register this callback so we'll have it called on this event */
-		event_signal_add(name, (signal_f)event_signal_callback, ctx);
-	}
-	
-	/* add the callback to the event context */
-	event_get_callback(ctx, function, 1);
-
-	return 1;
 }
 
 /*
@@ -394,40 +261,6 @@ void events_free() {
 	
 	return;
 }
-
-/*
-static unsigned int event_raise_callback(struct collection *c, void *item, void *param) {
-
-
-	return 1;
-}
-*/
-
-// exported to lua
-// call all events registered under the specified name
-// return 0 if any event return 0
-/*unsigned int event_raise(char *function, unsigned int param_count, struct event_parameter *params) {
-	struct {
-		char *function;
-		unsigned int param_count;
-		struct event_parameter *params;
-		unsigned int status;
-	} ctx = { function, param_count, params, 1 };
-
-	if(!function) {
-		EVENTS_DBG("Params error");
-		return 0;
-	}
-
-	if(param_count && !params) {
-		EVENTS_DBG("%s could not be raised, param error.", function);
-		return 0;
-	}
-
-	collection_iterate(events_collection, event_raise_callback, &ctx);
-
-	return ctx.status;
-}*/
 
 int event_raise(char *name, unsigned int param_count, struct event_parameter *params) {
 	struct event_object o;

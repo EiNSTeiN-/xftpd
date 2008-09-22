@@ -38,29 +38,17 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SLAVES
-#  define DEBUG_SLAVES_DIALOG /* mostly connection dialog (flood) */
+#include "debug.h"
+#if defined(DEBUG_SLAVES)
+# define SLAVES_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
+#else
+# define SLAVES_DBG(format, arg...)
 #endif
 
-#ifdef DEBUG_SLAVES
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SLAVES_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SLAVES_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#if defined(DEBUG_SLAVES_DIALOG)
+# define SLAVES_DIALOG_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SLAVES_DBG(format, arg...)
-#endif
-
-#ifdef DEBUG_SLAVES_DIALOG
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SLAVES_DIALOG_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define SLAVES_DIALOG_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
-#else
-#  define SLAVES_DIALOG_DBG(format, arg...)
+# define SLAVES_DIALOG_DBG(format, arg...)
 #endif
 
 #include "io.h"
@@ -151,7 +139,7 @@ struct master_hello_data {
 } __attribute__((packed));
 
 unsigned long long int slave_files_size(struct slave_connection *cnx);
-const char *slave_address(struct slave_connection *cnx);
+ipaddress slave_ipaddress(struct slave_connection *cnx);
 
 void slave_connection_destroy(struct slave_connection *cnx);
 
@@ -171,7 +159,7 @@ unsigned int slave_mark_offline_from(struct slave_ctx *slave, struct vfs_element
 
 unsigned int slave_delete_file(struct slave_connection *cnx, struct vfs_element *element);
 
-unsigned int slave_usage_from(struct slave_connection *cnx, struct vfs_element *element);
+unsigned long long int slave_usage_from(struct slave_connection *cnx, struct vfs_element *element);
 
 int slaves_init();
 void slaves_free();

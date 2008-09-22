@@ -38,38 +38,19 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_COLLECTION
-#endif
-
-#ifdef DEBUG_COLLECTION
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define COLLECTION_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-#  define C_CHECKED(exp) { \
-	if(!exp) { \
-		printf("["__FILE__ ":\t%d ]\tC_CHECKED: you shoud check that.\n", __LINE__); \
-	} \
-}
-# else
-#  include "logging.h"
-#  define COLLECTION_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-#  define C_CHECKED(exp) { \
-	if(!exp) { \
-		logging_write("debug.log", "["__FILE__ ":\t%d ]\tC_CHECKED: you shoud check that.\n", __LINE__); \
-	} \
-}
-# endif
+#include "debug.h"
+#if defined(DEBUG_COLLECTION)
+# define COLLECTION_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define COLLECTION_DBG(format, arg...)
-#  define C_CHECKED(exp) exp
+# define COLLECTION_DBG(format, arg...)
 #endif
 
 #include "obj.h"
 
 #ifndef CONTAINING_RECORD
 #define CONTAINING_RECORD(address, type, field) ((type *)( \
-                                                  (PCHAR)(address) - \
-                                                  (ULONG_PTR)(&((type *)0)->field)))
+                                                  (char *)(address) - \
+                                                  (char *)(&((type *)0)->field)))
 #endif
 
 #define collection_static_list(_name) static struct collection_list _name = { &_name, &_name };
@@ -104,15 +85,6 @@
 	(_head)->next = (_list); \
 }
 
-#define collection_add(_c, _cb) collection_c_add(_c, &(_cb)->c)
-#define collection_delete(_c, _cb) collection_c_delete(_c, &(_cb)->c)
-#define collection_movelast(_c, _cb) collection_c_movelast(_c, &(_cb)->c)
-#define collectible_init(_cb) collectible_c_init(&(_cb)->c, &(_cb)->o)
-#define collectible_destroy(_cb) collectible_c_destroy(&(_cb)->c)
-#define collection_find(_c, _cb) collection_c_find(_c, &(_cb)->c)
-#define collection_lock(_c, _cb) collection_c_lock(_c, &(_cb)->c)
-#define collection_unlock(_c, _cb) collection_c_unlock(_c, &(_cb)->c)
-
 /*
 	All items in the collections are in
 	doubly-linked lists.
@@ -138,7 +110,7 @@ struct collection_counted_list {
 */
 typedef struct collection_iterator collection_iterator;
 struct collection_iterator {
-	struct collection_list all_iterators; /* linked to the global iterator lists. */
+	//struct collection_list all_iterators; /* linked to the global iterator lists. */
 	
 	struct collection_list iterators; /* linked to the parent collection.iterators list */
 	
@@ -162,7 +134,7 @@ typedef enum {
 /*
 	Base holder for all collectibles
 */
-typedef struct collection _collection;
+typedef struct collection collection;
 struct collection {
 	
 	struct obj o;
@@ -208,51 +180,82 @@ struct collectible {
 
 } __attribute__((packed));
 
+#define COLLECTION_TRACEBACK() { \
+	COLLECTION_DBG("traceback: %s:%u", file, line); \
+}
+
+#define COLLECTION_ASSERT(o, _s) { \
+	if(!(o)) { \
+		if((_s) && *(_s)) { \
+			COLLECTION_DBG("%s", (char *)(_s)); \
+			COLLECTION_TRACEBACK(); \
+		} \
+		return 0; \
+	} \
+}
+
 typedef int (*collection_f)(struct collection *c, void *item, void *param);
 
 /* constructor/destructors */
-struct collection *collection_new(collection_destroy_type destroy_type);
-void collection_destroy(struct collection *c);
+struct collection *collection_t_new(collection_destroy_type destroy_type, char *file, int line);
+#define collection_new(_c) collection_t_new(_c, __FILE__, __LINE__)
+
+#define collection_destroy(c) obj_destroy(&c->o);
 
 /* Empty the collection, call the destructors if needed */
-int collection_empty(struct collection *c);
+int collection_t_empty(struct collection *c, char *file, int line);
+#define collection_empty(_c) collection_t_empty(_c, __FILE__, __LINE__)
 
 int collectible_c_init(struct collectible *cb, struct obj *self);
+#define collectible_init(_cb) collectible_c_init(&(_cb)->c, &(_cb)->o)
 void collectible_c_destroy(struct collectible *cb);
-
-/* print debug information on a collection's internal structure. */
-//void collection_debug(struct collection *c);
+#define collectible_destroy(_cb) collectible_c_destroy(&(_cb)->c)
 
 /* i/o */
-int collection_c_add(struct collection *c, struct collectible *cb);
-int chk_collection_c_delete(struct collection *c, struct collectible *cb);
-#define collection_c_delete(a,b) { \
-	C_CHECKED(chk_collection_c_delete(a,b)); \
-}
+int collection_t_add(struct collection *c, struct collectible *cb, char *file, int line);
+#define collection_c_add(_c, _cb) collection_t_add(_c, _cb, __FILE__, __LINE__)
+#define collection_add(_c, _cb) collection_c_add(_c, &(_cb)->c)
+int collection_t_delete(struct collection *c, struct collectible *cb, char *file, int line);
+#define collection_c_delete(_c, _cb) collection_t_delete(_c, _cb, __FILE__, __LINE__)
+#define collection_delete(_c, _cb) collection_c_delete(_c, &(_cb)->c)
 
 /* utilities */
-void *collection_first(struct collection *c);
-int collection_c_movelast(struct collection *c, struct collectible *cb);
-int collection_c_find(struct collection *c, struct collectible *cb);
-unsigned int collection_size(struct collection *c);
-void *collection_first(struct collection *c);
-int collection_is_void(struct collection *c);
-int chk_collection_void(struct collection *c);
-#define collection_void(a) { \
-	C_CHECKED(chk_collection_void(a)); \
-}
+void *collection_t_first(struct collection *c, char *file, int line);
+#define collection_first(_c) collection_t_first(_c, __FILE__, __LINE__)
+int collection_t_movelast(struct collection *c, struct collectible *cb, char *file, int line);
+#define collection_c_movelast(_c, _cb) collection_t_movelast(_c, _cb, __FILE__, __LINE__)
+#define collection_movelast(_c, _cb) collection_c_movelast(_c, &(_cb)->c)
+int collection_t_find(struct collection *c, struct collectible *cb, char *file, int line);
+#define collection_c_find(_c, _cb) collection_t_find(_c, _cb, __FILE__, __LINE__)
+#define collection_find(_c, _cb) collection_c_find(_c, &(_cb)->c)
+unsigned int collection_t_size(struct collection *c, char *file, int line);
+#define collection_size(_c) collection_t_size(_c, __FILE__, __LINE__)
+int collection_t_is_void(struct collection *c, char *file, int line);
+#define collection_is_void(_c) collection_t_is_void(_c, __FILE__, __LINE__)
+void collection_t_void(struct collection *c, char *file, int line);
+#define collection_void(_c) collection_t_void(_c, __FILE__, __LINE__)
+
 
 /* callback iterators stuff */
-int collection_iterate(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param);
-void *collection_match(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param);
+int collection_t_iterate(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param, char *file, int line);
+#define collection_iterate(_c, _f, _p) collection_t_iterate(_c, _f, _p, __FILE__, __LINE__)
+void *collection_t_match(struct collection *c, int (*callback)(struct collection *c, void *item, void *param), void *param, char *file, int line);
+#define collection_match(_c, _f, _p) collection_t_match(_c, _f, _p, __FILE__, __LINE__)
 
 /* non-callback iterators stuff */
-int collection_cleanup_iterators();
-struct collection_iterator *collection_new_iterator(struct collection *c);
+//int collection_cleanup_iterators();
+struct collection_iterator *collection_t_new_iterator(struct collection *c, char *file, int line);
+#define collection_new_iterator(_c) collection_t_new_iterator(_c, __FILE__, __LINE__)
+void *collection_t_next(struct collection *c, struct collection_iterator *iter, char *file, int line);
+#define collection_c_next(_c, _i) collection_t_next(_c, _i, __FILE__, __LINE__)
 void *collection_next(struct collection *c, struct collection_iterator *iter);
 
 /* [un]lock */
-int collection_c_lock(struct collection *c, struct collectible *cb);
-int collection_c_unlock(struct collection *c, struct collectible *cb);
+int collection_t_lock(struct collection *c, struct collectible *cb, char *file, int line);
+#define collection_c_lock(_c, _cb) collection_t_lock(_c, _cb, __FILE__, __LINE__)
+#define collection_lock(_c, _cb) collection_c_lock(_c, &(_cb)->c)
+int collection_t_unlock(struct collection *c, struct collectible *cb, char *file, int line);
+#define collection_c_unlock(_c, _cb) collection_t_unlock(_c, _cb, __FILE__, __LINE__)
+#define collection_unlock(_c, _cb) collection_c_unlock(_c, &(_cb)->c)
 
 #endif /* __COLLECTION_H */

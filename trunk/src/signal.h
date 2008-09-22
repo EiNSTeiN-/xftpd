@@ -40,19 +40,11 @@
 #include "obj.h"
 #include "collection.h"
 
-#ifndef NO_FTPD_DEBUG
-//#  define DEBUG_SIGNAL
-#endif
-
-#ifdef DEBUG_SIGNAL
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SIGNAL_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  include "logging.h"
-#  define SIGNAL_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_SIGNAL)
+# define SIGNAL_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define SIGNAL_DBG(format, arg...)
+# define SIGNAL_DBG(format, arg...)
 #endif
 
 struct signal_ctx {
@@ -107,7 +99,7 @@ int signal_raise(struct signal_ctx *signal, void *obj);
 	Add a new signal to an owner list.
 	The grouping scheme is at the discretion of the caller.
 */
-struct signal_callback *signal_add(struct collection *signals, struct collection *group, char *name, int (*callback)(void *obj, void *param), void *param);
+struct signal_callback *signal_add(struct collection *signals, struct collection *group, const char *name, int (*callback)(void *obj, void *param), void *param);
 
 /* Add a filter to a signal callback */
 int signal_filter(struct signal_callback *s, void *obj);

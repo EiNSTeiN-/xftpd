@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <sys/timeb.h>
 #include <sys/types.h>
 #include <time.h>
@@ -42,9 +45,9 @@
 
 /* return the current time in milliseconds */
 unsigned long long int time_now() {
-	struct __timeb64 timeptr;
+	struct timeb timeptr;
 
-	_ftime64(&timeptr);
+	ftime(&timeptr);
 
 	/* convert in milliseconds */
 	return (timeptr.time * 1000) + timeptr.millitm;
@@ -60,12 +63,12 @@ unsigned long long int timer(unsigned long long int start) {
 void time_stamp_to_formated(unsigned long long int time, unsigned short *day,
 					 unsigned short *month, unsigned short *year,
 					unsigned short *hour, unsigned short *minute) {
-	__time64_t t;
+	time_t t;
 	struct tm *lt;
 
 	t = (time / 1000);
 
-	lt = _gmtime64(&t);
+	lt = gmtime(&t);
 	if(!lt) return;
 
 	if(day) *day = lt->tm_mday;

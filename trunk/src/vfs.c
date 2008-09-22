@@ -35,8 +35,10 @@
 
 /* virtual file system */
 
+#ifdef WIN32
 #include <windows.h>
-#include <io.h>
+#endif
+
 #include <stdio.h>
 
 #include "constants.h"
@@ -52,62 +54,13 @@
 #include "mirror.h"
 #include "nuke.h"
 #include "crc32.h"
+#include "dir.h"
+#include "asprintf.h"
+#include "wild.h"
 
 struct collection *sections = NULL;
 
 struct vfs_element *vfs_root = NULL;
-
-/*
-static unsigned int vfs_obj_destroy_leechers(struct collection *c, struct ftpd_client_ctx *client, void *param) {
-
-	ftpd_client_cleanup_data_connection(client);
-
-	return 1;
-}*/
-
-//static unsigned int vfs_obj_destroy_browsers(struct collection *c, struct ftpd_client_ctx *client, void *param) {
-
-	/* Just delete the client without any warning. */
-
-	/* TODO: tell the client why he's been disconnected */
-/*
-	VFS_DBG("Disconnecting client(%08x) %s because he's browsing folder", (int)client, client->username);
-
-	ftpd_client_destroy(client);
-
-	return 1;
-}
-
-static unsigned int vfs_obj_destroy_available_from(struct collection *c, struct slave_connection *cnx, struct vfs_element *element) {
-
-	collection_delete(cnx->available_files, element);
-
-	return 1;
-}
-
-static unsigned int vfs_obj_destroy_offline_from(struct collection *c, struct slave_ctx *slave, struct vfs_element *element) {
-
-	collection_delete(slave->offline_files, element);
-	collection_delete(element->offline_from, slave);
-
-	return 1;
-}
-
-static unsigned int vfs_obj_destroy_mirror(struct collection *c, struct mirror_ctx *mirror, void *param) {
-
-	mirror_cancel(mirror);
-
-	return 1;
-}*/
-
-/* used by vfs_recursive_delete */
-//static unsigned int vfs_obj_destroy_symlink(struct collection *c, struct vfs_element *element, void *param) {
-
-	/* delete the symlink element */
-/*	vfs_recursive_delete(element);
-
-	return 1;
-}*/
 
 static void vfs_obj_destroy(struct vfs_element *element) {
 	
@@ -287,14 +240,18 @@ struct vfs_element *vfs_create_root() {
 	return root;
 }
 
+#define ENDSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strcasecmp(&a[strlen(a)-strlen(b)], b))
+#define BEGINSWITH(a, b) \
+  ((strlen(a) > strlen(b)) && !strncasecmp(a, b, strlen(b)))
+
 int vfs_init() {
 	struct vfs_section *section;
-	struct _finddata_t fd;
-	intptr_t handle;
-	char *path, *file;
+	struct dir_ctx *dir;
+	char *path;
 
 	VFS_DBG("Loading ...");
-
+	
 	if(!vfs_root) {
 		vfs_root = vfs_create_root();
 		if(!vfs_root)
@@ -303,7 +260,7 @@ int vfs_init() {
 
 	sections = collection_new(C_CASCADE);
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(SECTIONS_FOLDER);
 	if(!path) {
 		VFS_DBG("Memory error");
 		return 0;
@@ -311,39 +268,32 @@ int vfs_init() {
 
 	SECTIONS_DBG("Loading ...");
 
-	file = malloc(strlen(path) + strlen(SECTIONS_FOLDER "section.*") + 1);
-	if(!file) {
-		SECTIONS_DBG("Memory error");
-		free(path);
-		return 0;
-	}
-	sprintf(file, "%s" SECTIONS_FOLDER "section.*", path);
-	free(path);
-
-	handle = _findfirst(file, &fd);
-	if (handle == -1) {
-		SECTIONS_DBG("Couldn't load \"" SECTIONS_FOLDER "section.*\"");
+	dir = dir_open(path, "section.*");
+	if(!dir) {
+		SECTIONS_DBG("Couldn't open \"%s\"", path);
 	} else {
 		do {
-			if(!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-			if(fd.attrib & _A_SUBDIR) continue;
-			if((strlen(fd.name) > 4) && !stricmp(&fd.name[strlen(fd.name)-4], ".tmp")) continue;
-
-			section = section_load(fd.name);
+			if(dir_attrib(dir) & DIR_SUBDIR) continue;
+			if(ENDSWITH(dir_name(dir), ".tmp")) continue;
+			
+			section = section_load(dir_name(dir));
 			if(!section) {
-				SECTIONS_DBG("Could not load section from file %s", fd.name);
+				SECTIONS_DBG("Could not load section from file %s", dir_name(dir));
 				continue;
 			}
 
-		} while(!_findnext(handle, &fd));
-		_findclose(handle);
+		} while(dir_next(dir));
+		dir_close(dir);
 	}
-	free(file);
+	free(path);
 
-	SECTIONS_DBG("%u section(s) has been loaded", collection_size(sections));
+	SECTIONS_DBG("%u section(s) loaded", collection_size(sections));
 	
 	return 1;
 }
+
+#undef BEGINSWITH
+#undef ENDSWITH
 
 void section_obj_destroy(struct vfs_section *section) {
 	
@@ -363,7 +313,7 @@ void section_obj_destroy(struct vfs_section *section) {
 
 	if(section->config) {
 		remove(section->config->filename);
-		config_destroy(section->config);
+		config_close(section->config);
 		section->config = NULL;
 	}
 
@@ -384,19 +334,15 @@ struct vfs_section *section_load(const char *filename) {
 	char *path;
 	char *fullpath;
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(SECTIONS_FOLDER);
 	if(!path) return NULL;
 
-	fullpath = malloc(strlen(path) + strlen(SECTIONS_FOLDER) + strlen(filename) + 1);
+	fullpath = bprintf("%s/%s", path, filename);
+	free(path);
 	if(!fullpath) {
 		SECTIONS_DBG("Memory error");
-		free(path);
 		return NULL;
 	}
-	sprintf(fullpath, "%s" SECTIONS_FOLDER "%s", path, filename);
-	free(path);
-
-	//filename = fullpath;
 	
 	/* get the section name */
 	name = config_raw_read(fullpath, "name", NULL);
@@ -417,7 +363,7 @@ struct vfs_section *section_load(const char *filename) {
 	obj_init(&section->o, section, (obj_f)section_obj_destroy);
 	collectible_init(section);
 
-	section->config = config_new(fullpath, SECTIONS_CONFIG_TIMEOUT);
+	section->config = config_open(fullpath);
 	free(fullpath);
 	if(!section->config) {
 		SECTIONS_DBG("Memory error");
@@ -522,9 +468,9 @@ struct vfs_section *section_new(const char *name) {
 		return NULL;
 	}
 
-	sprintf(filename, "section.%I64u", time_now());
+	sprintf(filename, "section." LLU "", time_now());
 
-	path = _fullpath(NULL, ".", 0);
+	path = dir_fullpath(".");
 	if(!path) {
 		SECTIONS_DBG("Memory error");
 		return NULL;
@@ -550,7 +496,7 @@ struct vfs_section *section_new(const char *name) {
 	obj_init(&section->o, section, (obj_f)section_obj_destroy);
 	collectible_init(section);
 
-	section->config = config_new(fullpath, SECTIONS_CONFIG_TIMEOUT);
+	section->config = config_open(fullpath);
 	free(fullpath);
 	if(!section->config) {
 		SECTIONS_DBG("Memory error");
@@ -561,7 +507,7 @@ struct vfs_section *section_new(const char *name) {
 	section->name = strdup(name);
 	if(!section->name) {
 		SECTIONS_DBG("Memory error");
-		config_destroy(section->config);
+		config_close(section->config);
 		free(section);
 		return NULL;
 	}
@@ -580,7 +526,7 @@ struct vfs_section *section_new(const char *name) {
 
 static unsigned int section_get_matcher(struct collection *c, struct vfs_section *section, char *name) {
 
-	return !stricmp(name, section->name);
+	return !strcasecmp(name, section->name);
 }
 
 /* return a section by its name */
@@ -861,7 +807,7 @@ static unsigned int get_child_by_namesum_matcher(struct collection *c, struct vf
 	} *ctx = param;
 
 	if(ctx->namesum == element->namesum) {
-		return (!stricmp(ctx->name, element->name));
+		return (!strcasecmp(ctx->name, element->name));
 	}
 
 	return 0;
@@ -887,7 +833,7 @@ static unsigned int get_child_by_namesum_n_matcher(struct collection *c, struct 
 	} *ctx = param;
 
 	if(ctx->namesum == element->namesum) {
-		return (!strnicmp(ctx->name, element->name, ctx->n) && (strlen(element->name) == ctx->n));
+		return (!strncasecmp(ctx->name, element->name, ctx->n) && (strlen(element->name) == ctx->n));
 	}
 
 	return 0;
@@ -905,7 +851,13 @@ struct vfs_element *vfs_get_child_by_namesum_n(struct vfs_element *container, co
 	return collection_match(container->childs, (collection_f)get_child_by_namesum_n_matcher, &ctx);
 }
 
-/* trim the name so it looks like "abc/def/ghi" */
+/*
+  Trim the name so it looks like "abc/def/ghi"
+  Once a name is trimmed, it is passed to a vfs_secure* function
+  that will never trim it again. It allows faster lookup since
+  only the first function trims the name and the resulting string
+  is used in-place by all other functions.
+*/
 char *vfs_trim_name(const char *name) {
 	unsigned int i,j,k;
 	char *normalized, *ptr, *ptr2;
@@ -971,7 +923,7 @@ char *vfs_trim_name(const char *name) {
 		next thing we have to do is to collapse any ".." folder
 		because some dumb ftp clients doesn't handle CDUP
 	*/
-	if(!stricmp(normalized, "..") || !strnicmp(normalized, "../", 3)) {
+	if(!strcasecmp(normalized, "..") || !strncasecmp(normalized, "../", 3)) {
 		VFS_DBG("Illegal path");
 		free(normalized);
 		return NULL;
@@ -983,20 +935,20 @@ char *vfs_trim_name(const char *name) {
 		do {
 			if(!strchr(ptr2, '/')) {
 				// ptr2 points to last folder in path
-				if(!stricmp(ptr2, "..")) {
+				if(!strcasecmp(ptr2, "..")) {
 					// got a ..
 					*ptr = 0;
 				}
 				break;
 			} else {
-				if(!strnicmp(ptr2, "../", 3)) {
+				if(!strncasecmp(ptr2, "../", 3)) {
 					// got a ../
 					ptr2 = strchr(ptr2, '/')+1;
 					j = strlen(ptr2)+1;
 					for(i=0;i<j;i++) {
 						*(ptr+i) = *(ptr2+i);
 					}
-					if(!stricmp(normalized, "..") || !strnicmp(normalized, "../", 3)) {
+					if(!strcasecmp(normalized, "..") || !strncasecmp(normalized, "../", 3)) {
 						VFS_DBG("Illegal path");
 						free(normalized);
 						return NULL;
@@ -1032,7 +984,7 @@ char *vfs_trim_name(const char *name) {
 	Return a copy of the strign at position 'left' to position 'right' (incl.) from 's'.
 	Does not check for validity of the parameters.
 */
-char *strndup(const char *s, unsigned int left, unsigned int right) {
+char *vfs_strndup(const char *s, unsigned int left, unsigned int right) {
 	char *copy;
 	unsigned int namelen = (right-left)+1;
 
@@ -1256,35 +1208,21 @@ char *vfs_get_relative_path(struct vfs_element *container, struct vfs_element *e
 
 	/*
 		we have to move the path at the beginning of the buffer,
-		because right now it's at the complete end because we
-		printed it recursively
+		at this point it's still at the complete end of the buffer
+		because we printed it recursively.
 	*/
 	memmove(buffer, &buffer[currlen], length-currlen);
 
 	return buffer;
 }
 
-/* special relative_path() to don't leak too much memory */
-static char *vfs_lua_relative_path = NULL;
-const char *vfs_lua_get_relative_path(struct vfs_element *container, struct vfs_element *element) {
-
-	if(vfs_lua_relative_path) {
-		free(vfs_lua_relative_path);
-		vfs_lua_relative_path = NULL;
-	}
-
-	vfs_lua_relative_path = vfs_get_relative_path(container, element);
-
-	return (const char*)vfs_lua_relative_path;
-}
-
 struct vfs_element *vfs_secure_create_folder(struct vfs_element *container, const char *name, const char *owner);
 
 /*
-	create a file inside the specified container
-	work recursively, if name is /x/y/z/w.dat then
+	Create a file inside the specified container.
+	Work recursively, if name is /x/y/z/w.dat then
 	the whole tree will be created with the same
-	user as the owner
+	specified owner.
 */
 struct vfs_element *vfs_create_file(struct vfs_element *container, const char *name, const char *owner) {
 	struct vfs_element *element;
@@ -1584,7 +1522,7 @@ struct vfs_element *vfs_secure_create_folder(struct vfs_element *container, cons
 
 		//if(ptr) {
 			element->namesum = namesum;
-			element->name = strndup(name, 0, namelen-1);
+			element->name = vfs_strndup(name, 0, namelen-1);
 		//} else {
 			//element->name = strdup(name);
 		//}

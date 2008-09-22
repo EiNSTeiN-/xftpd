@@ -33,8 +33,14 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdio.h>
+#ifdef WIN32
+#include <windows.h>
+#else
+#include <stdlib.h>
+#include <string.h>
+#endif
 
+#include <stdio.h>
 
 #include "logging.h"
 #include "asprintf.h"

@@ -32,54 +32,20 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+ 
+#ifndef __COMPAT_H
+#define __COMPAT_H
 
-#ifndef __SEARCH_H
-#define __SEARCH_H
-
-#include "constants.h"
-
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_SEARCH
-#endif
-
-#ifdef DEBUG_SEARCH
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define SEARCH_DBG(format, arg...) printf("["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  include "logging.h"
-#  define SEARCH_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#ifdef WIN32
+  #define sleep Sleep
+  #define creat _creat
+  #define close _close
+  //#define O_RDWR (_S_IREAD | _S_IWRITE)
+  #define LLU "%I64u"
 #else
-#  define SEARCH_DBG(format, arg...)
+  #define GetLastError() errno
+  #define _atoi64(v) strtoll(v, NULL, 10)
+  #define LLU "%llu"
 #endif
 
-#include "collection.h"
-#include "vfs.h"
-
-enum search_type {
-	SEARCH_TYPE_FILE,
-	SEARCH_TYPE_FOLDER,
-	SEARCH_TYPE_BOTH,
-};
-
-/*
-	This function will iterate the whole vfs from the given point
-	and return a collection of files or folders matching the name.
-
-	The search is done case-insensively, and it get the whole match.
-*/
-struct collection *search_plain(struct vfs_element *root, const char *name, int type);
-
-/* Same as above, but the search is done using a wildcarded pattern */
-struct collection *search_wild(struct vfs_element *root, const char *name, int type);
-
-/* Return the intersecting elements between the two collections */
-struct collection *search_intersect(struct collection *a, struct collection *b);
-
-/*
-	Iterate the whole vfs from the given point, and call a lua function
-	with the corresponding parameter.
-*/
-int search_iterate(struct vfs_element *root, const char *function, void *param);
-
-#endif /* __SEARCH_H */
+#endif /* __COMPAT_H */

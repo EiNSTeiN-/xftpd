@@ -36,16 +36,11 @@
 #ifndef __TIME_H
 #define __TIME_H
 
-#include <windows.h>
-#include "sys/stat.h"
+#include <stdio.h>
+#include <sys/stat.h>
 #include <sys/timeb.h>
 #include <sys/types.h>
 #include <time.h>
-
-// can't find these damn headers
-void _ftime64(struct __timeb64 *t);
-struct tm *_gmtime64(__time64_t *t);
-int _fstat64(int fd, struct __stat64 *buffer);
 
 unsigned long long int time_now();
 unsigned long long int timer(unsigned long long int start);

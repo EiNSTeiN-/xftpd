@@ -33,88 +33,15 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "irccore.h"
-$#include "tree.h"
+$#include "events.h"
+$#include "slaveselection.h"
 
-typedef struct {
-	char *src;
-	char *dest;
-	char *args;
-} irc_message;
+module event {
+	//custom: unsigned int event_register @ add(char *name, char *function);
+	//custom: bool event_register @ add(char *name, (*callback)(...));
+}
 
-typedef enum {
-	IRC_SOURCE_ANY,
-	IRC_SOURCE_CHANNEL,
-	IRC_SOURCE_PRIVATE,
-	IRC_SOURCE_NOTICE
-} irc_source;
-
-typedef struct {
-	collectible c @ collectible;
-
-	unsigned long long int timestamp; /* last JOIN command timestamp */
-	unsigned int joined;
-
-	char *name;
-	char *key;
-	
-} irc_channel;
-
-typedef struct {
-	
-	unsigned int connected;
-
-	_collection *channels;
-
-	const char *address;
-	unsigned short port;
-
-	const char *nickname;
-	const char *realname;
-	const char *ident;
-
-	unsigned int delay; /* delay between messages, in milliseconds */
-	unsigned long long int timestamp; /* last send time */
-
-} irc_server;
-
-typedef struct {
-	char *hostname;
-	char *nick;
-} irc_nick_change;
-
-typedef struct {
-	char *hostname;
-	char *channel;
-} irc_join_channel;
-
-typedef struct {
-	char *hostname;
-	char *channel;
-} irc_part_channel;
-
-typedef struct {
-	char *hostname;
-	char *victim;
-	char *channel;
-} irc_kick_user;
-
-typedef struct {
-	char *hostname;
-} irc_quit;
-
-module irc {
-	extern _collection *irc_hooks @ hooks;
-	extern irc_server irccore_server @ server;
-
-	int irc_connect @ connect(irc_server *server);
-	void irc_disconnect @ disconnect(irc_server *server);
-
-	unsigned int irc_channel_add @ join(irc_server *server, char *name, char *key);
-
-	unsigned int irc_lua_raw @ raw(char *message);
-	unsigned int irc_lua_say @ say(char *channel, char *message);
-	unsigned int irc_lua_broadcast @ broadcast(char *group, char *message);
-
-	unsigned int irc_tree_add @ hook(_collection *tree, char *trigger, char *handler, irc_source source = IRC_SOURCE_ANY);
+module slaveselection {
+	//custom: unsigned int slaveselection_register @ add(char *name, char *function);
+	//custom: bool slaveselection_register @ add(char *name, (*callback)(...));
 }

@@ -33,21 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-$#include "search.h"
+$#include "site.h"
+$#include "tree.h"
 
-enum search_type {
-	SEARCH_TYPE_FILE,
-	SEARCH_TYPE_FOLDER,
-	SEARCH_TYPE_BOTH,
-};
-
-module search {
-	struct collection *search_plain @ plain(struct vfs_element *root, const char *name, int type);
-
-	struct collection *search_wild @ wild(struct vfs_element *root, const char *name, int type);
-
-	struct collection *search_intersect @ intersect(struct collection *a, struct collection *b);
-
-	int search_iterate @ iterate(struct vfs_element *root, const char *function, void *param);
+module site {
+	extern collection *site_hooks @ hooks;
+	//custom: bool site_tree_add @ hook(_collection *tree, char *trigger, char *handler);
 }
-

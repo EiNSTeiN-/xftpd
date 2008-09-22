@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <zlib.h>
 
 #include "socket.h"
@@ -58,7 +61,7 @@
 /* NOTE that the packet may be reallocated in memory during this process */
 unsigned int io_write_packet(struct io_context *io, struct packet **p) {
 	unsigned int encrypted_size;
-	char *encrypted;
+	unsigned char *encrypted;
 	unsigned long long int n;
 	unsigned long len;
 	char *compressed;
@@ -80,8 +83,8 @@ unsigned int io_write_packet(struct io_context *io, struct packet **p) {
 			return 0;
 		}
 
-		if(compress2(&compressed[4], &len, (void*)(*p), (*p)->size, Z_BEST_COMPRESSION) != Z_OK) {
-			IO_DBG("ZLib compress2() error: psize: %u, n: %I64u", (*p)->size, n);
+		if(compress2((unsigned char *)&compressed[4], &len, (void*)(*p), (*p)->size, Z_BEST_COMPRESSION) != Z_OK) {
+			IO_DBG("ZLib compress2() error: psize: %u, n: " LLU "", (*p)->size, n);
 			free(compressed);
 			return 0;
 		}
@@ -172,7 +175,7 @@ unsigned int io_read_packet(struct io_context *io, struct packet **p, unsigned i
 			return 0;
 		}
 
-		if(timeout != INFINITE) {
+		if(timeout != -1) {
 			if(timer(io->timestamp) > timeout) {
 				/* operation timed out! */
 				free(io->p);

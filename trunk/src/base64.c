@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -162,38 +165,39 @@ static int ap_base64encode_binary(char *encoded, const unsigned char *string, in
 }
 
 /* convenience functions */
-char *b64_encode(char *buf, int len)
+char *b64_encode(unsigned char *buf, int len)
 {
-    int elen;
-    char *out;
+  int elen;
+  char *out;
 
-    if(len == 0)
-        len = strlen(buf);
+  if(len == 0)
+    len = strlen((char *)buf);
 
-    elen = ap_base64encode_len(len);
-    out = (char *) malloc(sizeof(char) * (elen + 1));
+  elen = ap_base64encode_len(len);
+  out = (char *) malloc(sizeof(char) * (elen + 1));
+  if(!out) {
+    BASE64_DBG("Memory error");
+    return NULL;
+  }
+
+  ap_base64encode_binary(out, buf, len);
+
+  return out;
+}
+
+unsigned char *b64_decode(char *buf, int *elen)
+{
+  unsigned char *out;
+
+  *elen = ap_base64decode_len(buf);
+  out = (unsigned char *) malloc(sizeof(char) * (*elen + 1));
 	if(!out) {
 		BASE64_DBG("Memory error");
 		return NULL;
 	}
 
-    ap_base64encode_binary(out, buf, len);
+  *elen = ap_base64decode_binary(out, buf);
 
-    return out;
+  return out;
 }
 
-char *b64_decode(char *buf, int *elen)
-{
-    char *out;
-
-    *elen = ap_base64decode_len(buf);
-    out = (char *) malloc(sizeof(char) * (*elen + 1));
-	if(!out) {
-		BASE64_DBG("Memory error");
-		return NULL;
-	}
-
-    *elen = ap_base64decode_binary(out, buf);
-
-    return out;
-}

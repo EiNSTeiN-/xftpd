@@ -40,19 +40,11 @@
 #include "obj.h"
 #include "collection.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_CONFIG
-#endif
-
-#ifdef DEBUG_CONFIG
-# include "logging.h"
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define CONFIG_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define CONFIG_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_CONFIG)
+# define CONFIG_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define CONFIG_DBG(format, arg...)
+# define CONFIG_DBG(format, arg...)
 #endif
 
 typedef struct config_field config_field;
@@ -60,11 +52,12 @@ struct config_field {
 	struct obj o;
 	struct collectible c;
 	
-	char modified; /* since the last save */
-
 	unsigned int namesum;
 	char *name;
 	char *value;
+	
+	/* comments just before this field */
+	char *comments;
 } __attribute__((packed));
 
 typedef struct config_file config_file;
@@ -72,68 +65,106 @@ struct config_file {
 	struct obj o;
 	struct collectible c;
 	
-	unsigned long long int timeout; /* maximum time between each saves */
-	unsigned long long int savetime; /* last time the file was saved to disk */
-	int modified; /* 1 if any field was modified since the last save */
-
 	/* Fully qualified path to the file. */
 	char *filename;
-
-	/* 1 if the file is loaded in memory */
-	int loaded;
-
+	
+	/* The adio file and optionally the adio operation
+		if any is started. */
+	struct adio_file *adf;
+	struct adio_operation *op;
+	
+	/* reference count to this config structure */
+	int refs;
+	
+	int is_saving	:1; /* nonzero if the file is currently being saved. */
+	int shouldsave	:1; /* nonzero if the file should be saved to disk */
+	
+	/* timestamp at which the file was last saved. */
+	unsigned long long int savetime;
+	
+	/* comments after the last field are stored here... */
+	char *comments;
+	
 	/* All fields of the file */
 	struct collection *fields; /* struct config_field */
 } __attribute__((packed));
+
+
+extern struct collection *open_configs;
+
 
 /*
 	Low level access to config files
 */
 char *config_load_file(const char *filename, unsigned int *length);
-char *config_lua_load_file(const char *filename, unsigned int *length);
 
 char *config_raw_read(const char *filename, const char *param, const char *default_value);
-char *config_raw_lua_read(const char *filename, const char *param, const char *default_value);
 int config_raw_write(const char *filename, const char *param, const char *new_value);
 
-/* Integer operations are only present for convenience. */
+/* Integer operations are only present for convenience.
+	They are wrappers around the two functions above. */
 unsigned long long int config_raw_read_int(const char *filename, const char *param, unsigned long long int default_value);
 int config_raw_write_int(const char *filename, const char *param, unsigned long long int new_value);
 
 
+
 /*
-	High-level access to config files
+	Opens the specified configuration file.
+	
+	If the file was already opened, then the reference count
+	of the config_file structure is incremented.
+	
+	If the file was not already opened, the file is loaded
+	in memory during this call.
 */
+struct config_file *config_open(const char *filename);
+	
+/*
+	Creates an empty config structure that is never writte
+	to the disk.
+*/
+struct config_file *config_volatile();
 
-/* Initialize the config structure without loading the file */
-struct config_file *config_new(const char *filename, unsigned long long int timeout);
-
-/* Destroy a config structure, discarding any unsaved changes */
-void config_destroy(struct config_file *config);
-
-/* Force a config file to be loaded to memory */
-int config_load(struct config_file *config);
-
-/* Force any changes in a config file to be saved to disk */
+/*
+	Starts an asynchronous operation to save the contents
+	of the file to disk. The file is saved automaticly every
+	5 minutes by default.
+*/
 int config_save(struct config_file *config);
 
-/* Check for timeouts and save files to disk if needed */
-int config_poll();
-
 /*
-	Read/write access to config files. If the file is not loaded,
-	it will be implicitly loaded by any of those functions.
+	Decrements the reference count of the config structure.
 
-	Integer operations are simply wrapped around thier srting
-	equivalents.
+	If the reference count reach zero, the file is first saved
+	if there is any unsaved changes, then the file is closed.
 */
+void config_close(struct config_file *config);
 
-/* Return a copy of the value that must be freed by the caller. */
+/* Return a copy of the value associated with parameter. The returned value that must be freed
+	by the caller. If the parameter has no value stored, the string in default_value will be copied and
+	returned. The return value is NULL if the parameter has no associated value AND default_value is also NULL,
+	or if any error occurs. */
 char *config_read(struct config_file *config, const char *param, const char *default_value);
-char *config_lua_read(struct config_file *config, const char *param, const char *default_value);
 unsigned long long int config_read_int(struct config_file *config, char *param, unsigned long long int default_value);
 
+/* Same as above, but return the internal copy of the value associated with the parameter. The
+	returned pointer must not be modified or kept by the caller across calls. The caller must
+	not attempt to free the returned pointer. If the parameter has no value, then the exact pointer
+	passed in default_value is returned. The return value is NULL if the parameter has no
+	associated value AND default_value is also NULL, or if any error occurs. */
+const char *config_pread(struct config_file *config, const char *param, const char *default_value);
+
+/*	Replace the current value associated with the parameter. If the parameter had not yet been
+	assigned any value, the parameter is created and will be written to the config file on disk.
+	If the new value is NULL, the parameter is deleted and removed from the file on disk. If the
+	parameter had not yet been assigned any value, the and the new value is NULL, then the config
+	file say unchanged on disk. */
 int config_write(struct config_file *config, const char *param, const char *new_value);
 int config_write_int(struct config_file *config, const char *param, unsigned long long int new_value);
+
+int config_field_comment(struct config_file *config, const char *param, const char *new_comment);
+int config_file_comment(struct config_file *config, const char *new_comment);
+
+int config_poll();
 
 #endif /* __CONFIG_H */

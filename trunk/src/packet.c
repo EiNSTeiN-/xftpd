@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 #include <stdio.h>
 
 #include "socket.h"
@@ -60,8 +63,8 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 	if(!filledsize) return 0;
 	
 	/* get the length of data available to be read */
-	if(ioctlsocket(s, FIONREAD, &argp) != 0) {
-		PACKET_DBG("%I64u\t ioctlsocket failed", time_now());
+	/*if(ioctlsocket(s, FIONREAD, &argp) != 0) {
+		PACKET_DBG("" LLU "\t ioctlsocket failed", time_now());
 		if(*p) {
 			free(*p);
 			*p = NULL;
@@ -69,13 +72,14 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 		*filledsize = 0;
 
 		return 0;
-	}
-
+	}*/
+	
+	argp = socket_avail(s);
 	if(!argp) {
 		/* if the POLLRDNORM event has been raised, there's data to be read
 			so if there's no data in the input buffer, it must be that the
 			server disconnected us */
-			PACKET_DBG("%I64u\t Disconnected from peer", time_now());
+			PACKET_DBG("" LLU "\t Disconnected from peer", time_now());
 		if(*p) {
 			free(*p);
 			*p = NULL;
@@ -84,11 +88,11 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 		return 0;
 	}
 
-	PACKET_DBG("%I64u\t %u bytes ready right now", time_now(), (int)argp);
+	PACKET_DBG("" LLU "\t %u bytes ready right now", time_now(), (int)argp);
 
 	if(*p) {
 		/* there's a packet being read. */
-		PACKET_DBG("%I64u\t resuming at %u", time_now(), (*filledsize));
+		PACKET_DBG("" LLU "\t resuming at %u", time_now(), (*filledsize));
 
 		/* get the size remaining to be read */
 		size = ((*p)->size - (*filledsize));
@@ -97,7 +101,7 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 		size = recv(s, (((char*)(*p))+(*filledsize)), argp, 0);
 
 		if((int)size <= 0) {
-			PACKET_DBG("%I64u\t size != argp, %u != %u", time_now(), size, (int)argp);
+			PACKET_DBG("" LLU "\t size != argp, %u != %u", time_now(), size, (int)argp);
 
 			/* no data could be read */
 			if(*p) {
@@ -111,11 +115,11 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 		(*filledsize) += size;
 
 		if((*filledsize) == (*p)->size) {
-			PACKET_DBG("%I64u\t completed the packet !", time_now());
+			PACKET_DBG("" LLU "\t completed the packet !", time_now());
 			return 1;
 		}
 		
-		PACKET_DBG("%I64u\t receival should be resumed !", time_now());
+		PACKET_DBG("" LLU "\t receival should be resumed !", time_now());
 		return 0;
 	}
 
@@ -123,7 +127,7 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 
 	/* make sure there's at least a packet to be read */
 	if(argp < sizeof(struct packet)) {
-		PACKET_DBG("%I64u\t not yet a packet to be read !", time_now());
+		PACKET_DBG("" LLU "\t not yet a packet to be read !", time_now());
 		/* there's not yet a packet to be read. */
 		return 1;
 	}
@@ -131,22 +135,22 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 	/* start reading the packet */
 	read = recv(s, (void*)&size, sizeof(size), 0);
 	if(read != sizeof(size)) {
-		PACKET_DBG("%I64u\t can't get this packet size !", time_now());
+		PACKET_DBG("" LLU "\t can't get this packet size !", time_now());
 		return 0;
 	}
 
-	PACKET_DBG("%I64u\t size of the packet being read: %u", time_now(), size);
+	PACKET_DBG("" LLU "\t size of the packet being read: %u", time_now(), size);
 
 	/* attempt to send a packet with its size less than a packet */
 	if(size < sizeof(struct packet)) {
-		PACKET_DBG("%I64u\t sending a packet less than a packet size !", time_now());
+		PACKET_DBG("" LLU "\t sending a packet less than a packet size !", time_now());
 		return 0;
 	}
 
 	/* alloc the new packet */
 	(*p) = malloc(size);
 	if(!(*p)) {
-		PACKET_DBG("%I64u\t memory error !", time_now());
+		PACKET_DBG("" LLU "\t memory error !", time_now());
 		return 0;
 	}
 	memset(*p, 0, size);
@@ -157,23 +161,23 @@ unsigned int packet_read(int s, struct packet **p, unsigned int *filledsize) {
 	/* read what can be read */
 	read = recv(s, (((char*)(*p))+sizeof(size)), (argp - sizeof(size)), 0);
 	if(!read || (read < (sizeof(struct packet) - sizeof(size)))) {
-		PACKET_DBG("%I64u\t can't get packet body !", time_now());
+		PACKET_DBG("" LLU "\t can't get packet body !", time_now());
 		free(*p);
 		(*p) = NULL;
 		return 0;
 	}
 
-	PACKET_DBG("%I64u\t %u bytes have been read !", time_now(), read);
+	PACKET_DBG("" LLU "\t %u bytes have been read !", time_now(), read);
 
 	/* finished reading the packet ? */
 	if((read + sizeof(size)) == (*p)->size) {
-		PACKET_DBG("%I64u\t packet entirely read !", time_now());
+		PACKET_DBG("" LLU "\t packet entirely read !", time_now());
 		return 1;
 	}
 
 	(*filledsize) = (read + sizeof(size));
 	//io->timestamp = time_now();
-	PACKET_DBG("%I64u\t packet should be resumed (1) !", time_now());
+	PACKET_DBG("" LLU "\t packet should be resumed (1) !", time_now());
 
 	return 0;
 }

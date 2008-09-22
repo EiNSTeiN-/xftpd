@@ -39,19 +39,14 @@
 #include "constants.h"
 #include "blowfish.h"
 #include "secure.h"
+#include "luainit.h"
+#include "scripts.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_IRC
-#endif
-
-#ifdef DEBUG_IRC
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define IRC_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define IRC_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_IRCCORE)
+# define IRCCORE_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define IRC_DBG(format, arg...)
+# define IRCCORE_DBG(format, arg...)
 #endif
 
 #include "users.h"
@@ -70,9 +65,11 @@ struct irc_handler {
 	struct obj o;
 	struct collectible c;
 	
-	char *handler;
+	struct script_ctx *script;
+	
+	int handler_index;
 	irc_source src;
-};
+} __attribute__((packed));
 
 typedef struct irc_nick_change irc_nick_change;
 struct irc_nick_change {
@@ -188,6 +185,7 @@ unsigned int irc_lua_broadcast(char *target, char *message);
 
 unsigned int irc_broadcast_group(struct irc_server *server, char *group, char *message);
 
-unsigned int irc_tree_add(struct collection *branches, char *trigger, char *handler, irc_source src);
+//unsigned int irc_tree_add(struct collection *branches, char *trigger, char *handler, irc_source src);
+int irc_tree_add(lua_State *L);
 
 #endif /* __IRCCORE_H */

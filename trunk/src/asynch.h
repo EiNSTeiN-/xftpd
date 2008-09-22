@@ -38,18 +38,11 @@
 
 #include "constants.h"
 
-#ifndef NO_FTPD_DEBUG
-#  define DEBUG_ASYNCH
-#endif
-
-#ifdef DEBUG_ASYNCH
-# ifdef FTPD_DEBUG_TO_CONSOLE
-#  define ASYNCH_DBG(format, arg...) printf("["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# else
-#  define ASYNCH_DBG(format, arg...) logging_write("debug.log", "["__FILE__ ":\t%d ]\t" format "\n", __LINE__, ##arg)
-# endif
+#include "debug.h"
+#if defined(DEBUG_ASYNCH)
+# define ASYNCH_DBG(format, arg...) { _DEBUG_CONSOLE(format, ##arg) _DEBUG_FILE(format, ##arg) }
 #else
-#  define ASYNCH_DBG(format, arg...)
+# define ASYNCH_DBG(format, arg...)
 #endif
 
 #include "packet.h"

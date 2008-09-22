@@ -33,7 +33,10 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
+#endif
+
 
 /*
 	manage the (almost) real-time stats between master and slaves
@@ -122,7 +125,7 @@ static unsigned int probe_stats_callback(struct slave_connection *cnx, struct sl
 
 	/* if timeout or protocol error then exit */
 	if(!p || (p->type != IO_STATS)) {
-		STATS_DBG("%I64u: Stats query failed", cmd->uid);
+		STATS_DBG("" LLU ": Stats query failed", cmd->uid);
 		return 0;
 	}
 

@@ -33,13 +33,23 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef WIN32
 #include <windows.h>
-#include <poll.h>
+#include <direct.h>
+#include <io.h>
+#else
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/statvfs.h>
+#endif
+
+//#include <poll.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <direct.h>
 
 #include "asprintf.h"
 #include "collection.h"
@@ -58,6 +68,7 @@
 #include "signal.h"
 #include "proxy.h"
 #include "adio.h"
+#include "dir.h"
 
 #include "constants.h"
 
@@ -145,11 +156,6 @@ static unsigned short get_next_local_port() {
 	return port;
 }
 
-int _stat64(
-   const char *path,
-   struct __stat64 *buffer 
-);
-
 static void delete_xfer(struct slave_xfer *xfer, int error);
 	
 static void file_map_obj_destroy(struct file_map *file) {
@@ -182,7 +188,7 @@ static void file_map_obj_destroy(struct file_map *file) {
 /* add a file map to the specified disk
 	the name is like \dir\file.bin relative to disk->path */
 static struct file_map *file_map_add(struct disk_map *disk, const char *name) {
-	struct __stat64 stats;
+	struct stat stats;
 	char *full_name;
 	struct file_map *file;
 
@@ -211,7 +217,7 @@ static struct file_map *file_map_add(struct disk_map *disk, const char *name) {
 	}
 	sprintf(full_name, "%s%s", disk->path, &name[1]);
 
-	if(_stat64(full_name, &stats) == -1) {
+	if(stat(full_name, &stats) == -1) {
 		SLAVE_DBG("Error getting stats on %s", full_name);
 		collection_destroy(file->xfers);
 		free(file);
@@ -240,7 +246,7 @@ static int lookup_file_on_disk_callback(struct collection *c, void *item, void *
 		struct file_map *file;
 	} *ctx = param;
 
-	if(!stricmp(file->name, ctx->name)) {
+	if(!strcasecmp(file->name, ctx->name)) {
 		ctx->file = file;
 		return 0;
 	}
@@ -274,6 +280,11 @@ static struct file_map *lookup_file(char *name) {
 	return ctx.file;
 }
 
+#ifdef WIN32
+#define rmdir _rmdir
+#endif
+
+
 void _rmdir_recursive(char *path, char *toremove) {
 	char *fullpath, *ptr;
 
@@ -283,7 +294,7 @@ void _rmdir_recursive(char *path, char *toremove) {
 		return;
 	}
 	sprintf(fullpath, "%s%s", path, toremove);
-	_rmdir(fullpath);
+	rmdir(fullpath);
 	free(fullpath);
 
 	ptr = strchr(toremove, '\\');
@@ -439,7 +450,7 @@ static unsigned int reply_failure(struct io_context *io, struct packet *p) {
 		return 0;
 	}
 
-	SLAVE_DIALOG_DBG("%I64u: Failure reply built", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Failure reply built", p->uid);
 
 	return 1;
 }
@@ -502,7 +513,7 @@ static unsigned int process_file_list(struct io_context *io, struct packet *p) {
 		unsigned int names_size;
 	} ctx = { 0, 0 };
 	
-	SLAVE_DIALOG_DBG("%I64u: File list query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": File list query received", p->uid);
 
 	collection_iterate(mapped_disks, (collection_f)stat_disk_files, &ctx);
 
@@ -510,7 +521,7 @@ static unsigned int process_file_list(struct io_context *io, struct packet *p) {
 		if(!enqueue_packet(p->uid, IO_FILE_LIST, NULL, 0))
 			return 0;
 		
-		SLAVE_DIALOG_DBG("%I64u: File list response built (NO file)", p->uid);
+		SLAVE_DIALOG_DBG("" LLU ": File list response built (NO file)", p->uid);
 	} else {
 		struct {
 			char *buffer;
@@ -533,15 +544,19 @@ static unsigned int process_file_list(struct io_context *io, struct packet *p) {
 		}
 		free(ctx2.buffer);
 		
-		SLAVE_DIALOG_DBG("%I64u: File list response built (%u bytes)", p->uid, ctx2.offset);
+		SLAVE_DIALOG_DBG("" LLU ": File list response built (%u bytes)", p->uid, ctx2.offset);
 	}
 
 	return 1;
 }
 
+#ifndef WIN32
+#define MAX_PATH PATH_MAX
+#endif
+
 static unsigned int process_slave_update(struct io_context *io, struct packet *p) {
 	char full_path[MAX_PATH];
-	char *data;
+	unsigned char *data;
 	unsigned int size;
 	FILE *f;
 	char *filename;
@@ -559,8 +574,10 @@ static unsigned int process_slave_update(struct io_context *io, struct packet *p
 		return 1;
 	}
 
+#ifdef WIN32
 	GetModuleFileName(NULL, full_path, sizeof(full_path));
-	
+#endif
+
 	/* Execute the update file */
 	params = bprintf("update %s", full_path);
 	if(!params) {
@@ -589,6 +606,7 @@ static unsigned int process_slave_update(struct io_context *io, struct packet *p
 	}
 	fclose(f);
 	
+#ifdef WIN32
 	if(ShellExecute(NULL, "open", filename, params, "", SW_HIDE) <= (HINSTANCE)32) {
 		SLAVE_DBG("Could not ShellExecute the update file");
 		remove(filename);
@@ -598,6 +616,9 @@ static unsigned int process_slave_update(struct io_context *io, struct packet *p
 		return 1;
 	}
 	SLAVE_DBG("Update process is going on well! Filename: \"%s\", params: \"%s\"", filename, params);
+#else
+	SLAVE_DBG("Update doesn't work yet for linux.");
+#endif
 	
 	free(filename);
 	free(params);
@@ -712,12 +733,12 @@ static char *build_sfv_info(struct file_map *file, unsigned int *size) {
 /* open the specified sfv file and send the extracted
 	files informations */
 static unsigned int process_slave_sfv(struct io_context *io, struct packet *p) {
-	char *path = &p->data[0];
+	char *path = (char *)&p->data[0];
 	struct file_map *file;
 	char *buffer;
 	unsigned int size, i;
 
-	SLAVE_DIALOG_DBG("%I64u: SFV query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": SFV query received", p->uid);
 
 	for(i=0;i<strlen(path);i++)
 		if(path[i] == '/') path[i] = '\\';
@@ -744,7 +765,7 @@ static unsigned int process_slave_sfv(struct io_context *io, struct packet *p) {
 	}
 	free(buffer);
 
-	SLAVE_DIALOG_DBG("%I64u: SFV response build (%u bytes)", p->uid, size);
+	SLAVE_DIALOG_DBG("" LLU ": SFV response build (%u bytes)", p->uid, size);
 
 	return 1;
 }
@@ -789,7 +810,7 @@ static unsigned int process_slave_sfvlog(struct io_context *io, struct packet *p
 	unsigned int total_sfv = 0, total_entries = 0;
 	
 	
-	SLAVE_DBG("%I64u: SFVLOG query received", p->uid);
+	SLAVE_DBG("" LLU ": SFVLOG query received", p->uid);
 
 	/*
 		The buffer we receive is an array of zero-terminated strings that
@@ -799,7 +820,7 @@ static unsigned int process_slave_sfvlog(struct io_context *io, struct packet *p
 	input_length = packet_data_length(p);
 	input_current = 0;
 	while(input_current < input_length) {
-		filename = &p->data[input_current];
+		filename = (char *)&p->data[input_current];
 		
 		for(i=0;i<strlen(filename);i++) if(filename[i] == '/') filename[i] = '\\';
 		
@@ -854,22 +875,23 @@ static unsigned int process_slave_sfvlog(struct io_context *io, struct packet *p
 	}
 	
 	if(!enqueue_packet(p->uid, IO_SFVLOG, buffer, filled)) {
-		SLAVE_DBG("%I64u: Enqueue packet failed.", p->uid);
+		SLAVE_DBG("" LLU ": Enqueue packet failed.", p->uid);
 		free(buffer);
 		return 0;
 	}
 	free(buffer);
 
-	SLAVE_DBG("%I64u: SFVLOG response build (%u bytes, %u files, %u entries)", p->uid, filled, total_sfv, total_entries);
+	SLAVE_DBG("" LLU ": SFVLOG response build (%u bytes, %u files, %u entries)", p->uid, filled, total_sfv, total_entries);
 
 	return 1;
 }
 
 /* used by process_hello */
 static unsigned int make_stats_diskspace(struct collection *c, struct disk_map *disk, struct stats_global *gstats) {
+#ifdef WIN32
 	struct _diskfree_t driveinfo;
 	unsigned int drive = 0;
-
+	
 	if((disk->path[0] >= 'a') && (disk->path[0] <= 'z')) drive = disk->path[0] - 'a'+1;
 	if((disk->path[0] >= 'A') && (disk->path[0] <= 'Z')) drive = disk->path[0] - 'A'+1;
 	if(!drive) return 1;
@@ -888,10 +910,25 @@ static unsigned int make_stats_diskspace(struct collection *c, struct disk_map *
 						(unsigned long long int)driveinfo.total_clusters *
 						(unsigned long long int)driveinfo.sectors_per_cluster *
 						(unsigned long long int)driveinfo.bytes_per_sector);
-
+#else
+  struct statvfs driveinfo;
+  
+	if(statvfs(disk->path, &driveinfo)) {
+		SLAVE_DBG("Cannot get disk infos for drive: %s", disk->path);
+		return 1;
+	}
+	
+	disk->diskfree = (unsigned long long int)(
+	          (unsigned long long int)driveinfo.f_bfree *
+	          (unsigned long long int)driveinfo.f_bsize);
+	disk->disktotal = (unsigned long long int)(
+	          (unsigned long long int)driveinfo.f_blocks *
+	          (unsigned long long int)driveinfo.f_frsize);
+#endif
+  
 	gstats->diskfree += disk->diskfree;
 	gstats->disktotal += disk->disktotal;
-
+  
 	return 1;
 }
 
@@ -962,7 +999,7 @@ static unsigned int process_hello(struct io_context *io, struct packet *p) {
 	unsigned int data_length;
 	struct master_hello_data *hello = (struct master_hello_data *)&p->data[0];
 
-	SLAVE_DIALOG_DBG("%I64u: Hello query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Hello query received", p->uid);
 
 	if(hello->use_encryption) {
 		io->flags |= IO_FLAGS_ENCRYPTED;
@@ -996,7 +1033,7 @@ static unsigned int process_hello(struct io_context *io, struct packet *p) {
 	}
 	free(data);
 
-	SLAVE_DIALOG_DBG("%I64u: Hello response built", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Hello response built", p->uid);
 
 	return 1;
 }
@@ -1005,21 +1042,22 @@ static unsigned int process_hello(struct io_context *io, struct packet *p) {
 	send it to the master */
 static unsigned int process_blowfish_key(struct io_context *io, struct packet *p) {
 	unsigned int length, data_length;
-	char *data, *buffer;
+	unsigned char *data;
+	unsigned char *buffer;
 
-	SLAVE_DIALOG_DBG("%I64u: Blowfish query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Blowfish query received", p->uid);
 
 	/* decrypt the client's blowfish key with our private key */
 	length = (p->size - sizeof(struct packet));
-	buffer = crypto_private_decrypt(&io->lkey, &p->data[0], length, &length);
+	buffer = crypto_private_decrypt(&io->lkey, (unsigned char *)&p->data[0], length, &length);
 	if(!buffer) {
-		SLAVE_DBG("%I64u: Could not decrypt master's blowfish key", p->uid);
+		SLAVE_DBG("" LLU ": Could not decrypt master's blowfish key", p->uid);
 		return 0;
 	}
 
 	/* set the client's blowfish key */
 	if(!crypto_set_cipher_key(&io->rbf, buffer, length)) {
-		SLAVE_DBG("%I64u: Could not set cipher key", p->uid);
+		SLAVE_DBG("" LLU ": Could not set cipher key", p->uid);
 		return 0;
 	}
 	memset(buffer, 0, length);
@@ -1030,14 +1068,14 @@ static unsigned int process_blowfish_key(struct io_context *io, struct packet *p
 	length = crypto_max_public_encryption_length(&io->rkey);
 	buffer = malloc(length);
 	if(!buffer) {
-		SLAVE_DBG("%I64u: Memory error", p->uid);
+		SLAVE_DBG("" LLU ": Memory error", p->uid);
 		return 0;
 	}
 
 	crypto_rand(buffer, length);
 
 	if(!crypto_set_cipher_key(&io->lbf, buffer, length)) {
-		SLAVE_DBG("%I64u: Could not set cipher key", p->uid);
+		SLAVE_DBG("" LLU ": Could not set cipher key", p->uid);
 		memset(buffer, 0, length);
 		free(buffer);
 		return 0;
@@ -1048,7 +1086,7 @@ static unsigned int process_blowfish_key(struct io_context *io, struct packet *p
 	memset(buffer, 0, length);
 	free(buffer);
 	if(!data) {
-		SLAVE_DBG("%I64u: Could not encrypt own blowfish key", p->uid);
+		SLAVE_DBG("" LLU ": Could not encrypt own blowfish key", p->uid);
 		return 0;
 	}
 
@@ -1058,7 +1096,7 @@ static unsigned int process_blowfish_key(struct io_context *io, struct packet *p
 	}
 	free(data);
 
-	SLAVE_DIALOG_DBG("%I64u: Blowfish response built", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Blowfish response built", p->uid);
 
 	return 1;
 }
@@ -1066,34 +1104,34 @@ static unsigned int process_blowfish_key(struct io_context *io, struct packet *p
 /* send the public part of our encryption key key */
 static unsigned int process_public_key(struct io_context *io, struct packet *p) {
 	unsigned int length;
-	char *data;
+	unsigned char *data;
 
-	SLAVE_DIALOG_DBG("%I64u: Public key query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Public key query received", p->uid);
 
 	/* init the remote keypair */
 	if(!crypto_initialize_keypair(&io->rkey, 0)) {
-		SLAVE_DBG("%I64u: Could not initialize keypair", p->uid);
+		SLAVE_DBG("" LLU ": Could not initialize keypair", p->uid);
 		return 0;
 	}
 
 	/* import the remote keypair */
 	length = (p->size - sizeof(struct packet));
 	if(!crypto_import_keypair(&io->rkey, 0, &p->data[0], length)) {
-		SLAVE_DBG("%I64u: Could not import master's keypair", p->uid);
+		SLAVE_DBG("" LLU ": Could not import master's keypair", p->uid);
 		return 0;
 	}
 
 	/* we've imported the remote key with no problem,
 		generate our public key and send it */
 	if(!crypto_generate_keypair(&io->lkey, COMMUNICATION_KEY_LEN)) {
-		SLAVE_DBG("%I64u: Could not generate own keypair", p->uid);
+		SLAVE_DBG("" LLU ": Could not generate own keypair", p->uid);
 		return 0;
 	}
 
 	/* send our public key for the communication */
 	data = crypto_export_keypair(&io->lkey, 0, &length);
 	if(!data) {
-		SLAVE_DBG("%I64u: Could not export own keypair", p->uid);
+		SLAVE_DBG("" LLU ": Could not export own keypair", p->uid);
 		return 0;
 	}
 
@@ -1103,7 +1141,7 @@ static unsigned int process_public_key(struct io_context *io, struct packet *p) 
 	}
 	free(data);
 
-	SLAVE_DIALOG_DBG("%I64u: Public key repsponse sent", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Public key repsponse sent", p->uid);
 
 	return 1;
 }
@@ -1240,7 +1278,7 @@ static void complete_xfer(struct slave_xfer *xfer) {
 		data.xfersize = xfer->xfered;
 		data.filesize = xfer->file->size;
 	} else {
-		SLAVE_DBG("%I64u: CANNOT COMPLETE XFER BECAUSE NO FILE POINTER", xfer->uid);
+		SLAVE_DBG("" LLU ": CANNOT COMPLETE XFER BECAUSE NO FILE POINTER", xfer->uid);
 		data.xfersize = 0;
 		data.filesize = 0;
 	}
@@ -1249,7 +1287,7 @@ static void complete_xfer(struct slave_xfer *xfer) {
 	crc32_close(&xfer->checksum);
 	data.checksum = xfer->checksum;
 
-	SLAVE_DBG("%I64u: Transfer complete: %I64u bytes transfered, checksum is %08x (time: %I64u)",
+	SLAVE_DBG("" LLU ": Transfer complete: " LLU " bytes transfered, checksum is %08x (time: " LLU ")",
 			xfer->uid, xfer->xfered, xfer->checksum, time_now());
 
 	if(xfer->asynch_uid != -1) {
@@ -1260,7 +1298,7 @@ static void complete_xfer(struct slave_xfer *xfer) {
 	if(xfer->file) {
 		/* if this file is a sfv, read it and add its contents to the file's structure. */
 		namelen = strlen(xfer->file->name);
-		if((namelen > 4) && !stricmp(&xfer->file->name[namelen-4], ".sfv")) {
+		if((namelen > 4) && !strcasecmp(&xfer->file->name[namelen-4], ".sfv")) {
 			sfv_parse(xfer->file);
 		}
 	}
@@ -1284,7 +1322,7 @@ int xfer_monitor_adio(struct slave_xfer *xfer) {
 	
 	xfer->fd = -1;
 	
-	SLAVE_DBG("%I64u: Peer connection was closed, still monitoring for adio.", xfer->uid);
+	SLAVE_DBG("" LLU ": Peer connection was closed, still monitoring for adio.", xfer->uid);
 	
 	collection_add(xfer_monitored_adio, xfer);
 	
@@ -1305,20 +1343,20 @@ int xfer_resume_recv(int fd, struct slave_xfer *xfer) {
 	/* those will never happen because of the underlying socket system. */
 	if(size == 0) {
 		/* socket closed, connection complete */
-		SLAVE_DBG("%I64u: Socket closed. transfer complete? (should not have happened!)", xfer->uid);
+		SLAVE_DBG("" LLU ": Socket closed. transfer complete? (should not have happened!)", xfer->uid);
 		//complete_xfer(xfer);
 		xfer_monitor_adio(xfer);
 		return 1;
 	}
 	if(size < 0) {
 		/* socket error */
-		SLAVE_DBG("%I64u: recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, xfer->secure_resume_len);
+		SLAVE_DBG("" LLU ": recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, xfer->secure_resume_len);
 		delete_xfer(xfer, IO_FAILURE);
 		return 1;
 	}
 	
 	/*if(size != xfer->secure_resume_len) {
-		SLAVE_DBG("%I64u: Was reaching for %u, only got %u bytes", xfer->uid, xfer->secure_resume_len, size);
+		SLAVE_DBG("" LLU ": Was reaching for %u, only got %u bytes", xfer->uid, xfer->secure_resume_len, size);
 	}*/
 	
 	/* Update the checksum */
@@ -1414,7 +1452,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 	}
 	
 	if(!xfer->ready || !xfer->connected) {
-		//SLAVE_DBG("%I64u: File transfer is not yet ready (download)", xfer->uid);
+		//SLAVE_DBG("" LLU ": File transfer is not yet ready (download)", xfer->uid);
 		return 1;
 	}
 	
@@ -1459,17 +1497,17 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		
 		if(success == -1) {
 			/* error while writing to file !? */
-			SLAVE_DBG("%I64u: adio_probe returned error.", xfer->uid);
+			SLAVE_DBG("" LLU ": adio_probe returned error.", xfer->uid);
 			delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 			return 0;
 		}
 		
 		/*if(!success) {
-			SLAVE_DBG("%I64u: adio_probe returned operation has processed %u bytes on %u", xfer->uid, xfer->op_done, xfer->op_length);
+			SLAVE_DBG("" LLU ": adio_probe returned operation has processed %u bytes on %u", xfer->uid, xfer->op_done, xfer->op_length);
 		}*/
 		
 		if(success == 1) {
-			/*SLAVE_DBG("%I64u: adio_probe returned operation complete with %u bytes (in %I64u ms)",
+			/*SLAVE_DBG("" LLU ": adio_probe returned operation complete with %u bytes (in " LLU " ms)",
 				xfer->uid, xfer->op_done, timer(xfer->op->timestamp));*/
 			
 			/* we finished writing the data to disk! */
@@ -1493,7 +1531,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 	/* Check if there's room for more data */
 	room = (xfer->buffersize - xfer->op_pointer);
 	if(!room && xfer->op_active) {
-		//SLAVE_DBG("%I64u: Damn, the buffer is full! Skipping on %u bytes... (%I64u ms)", xfer->uid, socket_avail(fd), xfer->op ? timer(xfer->op->timestamp) : 0);
+		//SLAVE_DBG("" LLU ": Damn, the buffer is full! Skipping on %u bytes... (" LLU " ms)", xfer->uid, socket_avail(fd), xfer->op ? timer(xfer->op->timestamp) : 0);
 		
 		/* would be a very good idea to increase here */
 		
@@ -1520,7 +1558,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		size = secure_recv(&xfer->secure, &xfer->buffer[xfer->op_pointer], avail, &tryagain);
 		if(size == -1) {
 			if(tryagain) {
-				//SLAVE_DBG("%I64u: Failed to secure_recv() at once. will resume.", xfer->uid);
+				//SLAVE_DBG("" LLU ": Failed to secure_recv() at once. will resume.", xfer->uid);
 				xfer->secure_resume_buf = &xfer->buffer[xfer->op_pointer];
 				xfer->secure_resume_len = avail;
 				return 1;
@@ -1530,21 +1568,21 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		/* those will never happen because of the underlying socket system. */
 		if(size == 0) {
 			/* socket closed, connection complete */
-			SLAVE_DBG("%I64u: Socket closed. transfer complete? (should not have happened!)", xfer->uid);
+			SLAVE_DBG("" LLU ": Socket closed. transfer complete? (should not have happened!)", xfer->uid);
 			//complete_xfer(xfer);
 			xfer_monitor_adio(xfer);
 			return 1;
 		}
 		if(size < 0) {
 			/* socket error */
-			SLAVE_DBG("%I64u: recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, avail);
+			SLAVE_DBG("" LLU ": recv() error (connection reset?). size: %u. avail: %u", xfer->uid, size, avail);
 			delete_xfer(xfer, IO_FAILURE);
 			return 1;
 		}
 		
 		/* too much flood
 		if(size != avail) {
-			SLAVE_DBG("%I64u: Was reaching for %u, only got %u bytes", xfer->uid, avail, size);
+			SLAVE_DBG("" LLU ": Was reaching for %u, only got %u bytes", xfer->uid, avail, size);
 		}*/
 		
 		/* Update the checksum */
@@ -1570,11 +1608,11 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 			
 			xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
 			if(!xfer->op) {
-				SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+				SLAVE_DBG("" LLU ": Could not create asynchronous operation!", xfer->uid);
 				delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 				return 0;
 			}
-			//SLAVE_DBG("%I64u: Writing %u bytes to file at %u.", xfer->uid, xfer->op_length, xfer->restart);
+			//SLAVE_DBG("" LLU ": Writing %u bytes to file at %u.", xfer->uid, xfer->op_length, xfer->restart);
 			
 			xfer->op_active = 1;
 			
@@ -1583,7 +1621,7 @@ int xfer_read(int fd, struct slave_xfer *xfer) {
 		}
 	}
 	
-	//SLAVE_DBG("%I64u: %u bytes received.", xfer->uid, size);
+	//SLAVE_DBG("" LLU ": %u bytes received.", xfer->uid, size);
 
 	return 1;
 }
@@ -1600,14 +1638,14 @@ int xfer_resume_send(int fd, struct slave_xfer *xfer) {
 	
 	if(write_size <= 0) {
 		/* send error */
-		//SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
-		SLAVE_DBG("%I64u: send() error: %u wanted, %d done (connection reset?).", xfer->uid, xfer->secure_resume_len, write_size);
+		//SLAVE_DBG("" LLU ": WSAGetLastError: %u", xfer->uid, WSAGetLastError());
+		SLAVE_DBG("" LLU ": send() error: %u wanted, %d done (connection reset?).", xfer->uid, xfer->secure_resume_len, write_size);
 		delete_xfer(xfer, IO_FAILURE);
 		return 1;
 	}
 	
 	if(write_size != xfer->secure_resume_len) {
-		SLAVE_DBG("%I64u: Was sending %u bytes, could only send %u bytes.", xfer->uid, xfer->secure_resume_len, write_size);
+		SLAVE_DBG("" LLU ": Was sending %u bytes, could only send %u bytes.", xfer->uid, xfer->secure_resume_len, write_size);
 	}
 	
 	crc32_add(&xfer->checksum, xfer->secure_resume_buf, write_size);
@@ -1632,7 +1670,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 			should do, because it always happens before the negotiation. */
 		if(xfer->query) {
 			if(send(fd, (void*)xfer->query, xfer->query->size, 0) != xfer->query->size) {
-				SLAVE_DBG("%I64u: send() error while sending query to proxy.", xfer->uid);
+				SLAVE_DBG("" LLU ": send() error while sending query to proxy.", xfer->uid);
 				delete_xfer(xfer, IO_FAILURE);
 				return 0;
 			}
@@ -1646,7 +1684,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 	
 	/* if we're supposed to write some data here, so do it */
 	if(!xfer->ready || !xfer->connected) {
-		//SLAVE_DBG("%I64u: File transfer is not yet ready (upload)", xfer->uid);
+		//SLAVE_DBG("" LLU ": File transfer is not yet ready (upload)", xfer->uid);
 		return 1;
 	}
 	
@@ -1668,7 +1706,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 	}
 	
 	if(xfer->restart > xfer->file->size) {
-		SLAVE_DBG("%I64u: CANNOT RESTART AFTER EOF", xfer->uid);
+		SLAVE_DBG("" LLU ": CANNOT RESTART AFTER EOF", xfer->uid);
 		delete_xfer(xfer, IO_FAILURE);
 		return 0;
 	}
@@ -1683,13 +1721,13 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 	if(xfer->op && xfer->op_active) {
 		success = adio_probe(xfer->op, &xfer->op_done);
 		if(success == -1) {
-			SLAVE_DBG("%I64u: adio probe returned an error", xfer->uid);
+			SLAVE_DBG("" LLU ": adio probe returned an error", xfer->uid);
 			delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 			return 1;
 		}
 		
 		if(!success) {
-			SLAVE_DBG("%I64u: adio_probe returned operation has processed %u bytes on %u", xfer->uid, xfer->op_done, xfer->op_length);
+			SLAVE_DBG("" LLU ": adio_probe returned operation has processed %u bytes on %u", xfer->uid, xfer->op_done, xfer->op_length);
 		}
 		
 		if(success == 1) {
@@ -1698,12 +1736,12 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 	}
 	
 	if(xfer->completed) {
-		//SLAVE_DBG("%I64u: Completed but still called...", xfer->uid);
+		//SLAVE_DBG("" LLU ": Completed but still called...", xfer->uid);
 		return 1;
 	}
 	
 	if(xfer->file->size == xfer->xfered) {
-		SLAVE_DBG("%I64u: Transfer completed successfully. Sutting down socket. (time: %I64u)", xfer->uid, time_now());
+		SLAVE_DBG("" LLU ": Transfer completed successfully. Sutting down socket. (time: " LLU ")", xfer->uid, time_now());
 		
 		make_socket_blocking(fd, 1);
 		shutdown(fd, SD_SEND);
@@ -1715,7 +1753,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 	
 	rem_size = (xfer->op_done - xfer->op_pointer);
 	if(rem_size) {
-		//SLAVE_DBG("%I64u: There's %u more bytes to be uploaded.", xfer->uid, rem_size);
+		//SLAVE_DBG("" LLU ": There's %u more bytes to be uploaded.", xfer->uid, rem_size);
 	}
 
 	if(rem_size) {
@@ -1734,14 +1772,14 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		}
 		if(write_size <= 0) {
 			/* send error */
-			//SLAVE_DBG("%I64u: WSAGetLastError: %u", xfer->uid, WSAGetLastError());
-			SLAVE_DBG("%I64u: send() error: %u wanted, %d done (connection reset?).", xfer->uid, rem_size, write_size);
+			//SLAVE_DBG("" LLU ": WSAGetLastError: %u", xfer->uid, WSAGetLastError());
+			SLAVE_DBG("" LLU ": send() error: %u wanted, %d done (connection reset?).", xfer->uid, rem_size, write_size);
 			delete_xfer(xfer, IO_FAILURE);
 			return 1;
 		}
 		
 		/*if(write_size != rem_size) {
-			SLAVE_DBG("%I64u: Was sending %u bytes, could only send %u bytes.", xfer->uid, rem_size, write_size);
+			SLAVE_DBG("" LLU ": Was sending %u bytes, could only send %u bytes.", xfer->uid, rem_size, write_size);
 		}*/
 		
 		crc32_add(&xfer->checksum, &xfer->buffer[xfer->op_pointer], write_size);
@@ -1760,12 +1798,12 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 			
 			xfer->op = adio_read(xfer->file->io.adio, xfer->buffer, xfer->restart, size, xfer->op);
 			if(!xfer->op) {
-				SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+				SLAVE_DBG("" LLU ": Could not create asynchronous operation!", xfer->uid);
 				delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 				return 0;
 			}
 			
-			//SLAVE_DBG("%I64u: Reading %u bytes at %u", xfer->uid, size, xfer->restart);
+			//SLAVE_DBG("" LLU ": Reading %u bytes at %u", xfer->uid, size, xfer->restart);
 			
 			xfer->op_active = 1;
 			xfer->op_pointer = 0;
@@ -1776,7 +1814,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 		} else {
 			/* good, there's no more operation going on AND we've reached the EOF */
 			if(!xfer->completed) {
-				SLAVE_DBG("%I64u: Transfer completed successfully. Sutting down socket. (time: %I64u)", xfer->uid, time_now());
+				SLAVE_DBG("" LLU ": Transfer completed successfully. Sutting down socket. (time: " LLU ")", xfer->uid, time_now());
 				
 				make_socket_blocking(fd, 1);
 				shutdown(fd, SD_SEND);
@@ -1793,7 +1831,7 @@ int xfer_write(int fd, struct slave_xfer *xfer) {
 
 int xfer_close(int fd, struct slave_xfer *xfer) {
 
-	SLAVE_DBG("%I64u: Graceful closure of the socket.", xfer->uid);
+	SLAVE_DBG("" LLU ": Graceful closure of the socket.", xfer->uid);
 
 	/* connection closed gracefully */
 	if(xfer->upload) {
@@ -1811,7 +1849,7 @@ static int xfer_adio_poll_callback(struct collection *c, struct slave_xfer *xfer
 	/* Check if the adio operation has completed. */
 	
 	if((xfer->op_pointer != xfer->op_length) && !xfer->op_active) {
-		SLAVE_DBG("%I64u: There is still %u bytes to be written to disk...", xfer->uid, (xfer->op_pointer - xfer->op_length));
+		SLAVE_DBG("" LLU ": There is still %u bytes to be written to disk...", xfer->uid, (xfer->op_pointer - xfer->op_length));
 		
 		/* move the extra data to the start of the buffer */
 		if(xfer->op_pointer - xfer->op_length) {
@@ -1825,7 +1863,7 @@ static int xfer_adio_poll_callback(struct collection *c, struct slave_xfer *xfer
 		
 		xfer->op = adio_write(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
 		if(!xfer->op) {
-			SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+			SLAVE_DBG("" LLU ": Could not create asynchronous operation!", xfer->uid);
 			delete_xfer(xfer, IO_ERROR_FILE_READWRITE);
 			return 0;
 		}
@@ -1838,22 +1876,22 @@ static int xfer_adio_poll_callback(struct collection *c, struct slave_xfer *xfer
 	
 	if(!xfer->op) {
 		/* wierd */
-		SLAVE_DBG("%I64u: Wierd, monitored xfer had no adio operation", xfer->uid);
+		SLAVE_DBG("" LLU ": Wierd, monitored xfer had no adio operation", xfer->uid);
 		complete_xfer(xfer);
 		return 1;
 	}
 	
 	success = adio_probe(xfer->op, &xfer->op_done);
 	if(success == -1) {
-		SLAVE_DBG("%I64u: Monitored adio probe returned error.", xfer->uid);
+		SLAVE_DBG("" LLU ": Monitored adio probe returned error.", xfer->uid);
 		return 1;
 	}
 	if(success == 0) {
-		//SLAVE_DBG("%I64u: Monitored adio probe returned only %u bytes done on %u bytes total.", xfer->uid, xfer->op_done, xfer->op_length);
+		//SLAVE_DBG("" LLU ": Monitored adio probe returned only %u bytes done on %u bytes total.", xfer->uid, xfer->op_done, xfer->op_length);
 		return 1;
 	}
 	if(success == 1) {
-		//SLAVE_DBG("%I64u: Monitored adio probe complete with %u bytes (in %I64u ms)", xfer->uid, xfer->op_done, timer(xfer->op->timestamp));
+		//SLAVE_DBG("" LLU ": Monitored adio probe complete with %u bytes (in " LLU " ms)", xfer->uid, xfer->op_done, timer(xfer->op->timestamp));
 		
 		if(xfer->op_pointer == xfer->op_length) {
 			complete_xfer(xfer);
@@ -1875,7 +1913,7 @@ static int xfer_adio_poll() {
 
 int xfer_error(int fd, struct slave_xfer *xfer) {
 
-	SLAVE_DBG("%I64u: Socket caused an error.", xfer->uid);
+	SLAVE_DBG("" LLU ": Socket caused an error.", xfer->uid);
 
 	/* connection closed unexpectedly */
 	delete_xfer(xfer, IO_ERROR_CNX_ERROR);
@@ -1885,7 +1923,7 @@ int xfer_error(int fd, struct slave_xfer *xfer) {
 
 int xfer_secure_error(int fd, struct slave_xfer *xfer) {
 
-	SLAVE_DBG("%I64u: SSL Dialog caused an error.", xfer->uid);
+	SLAVE_DBG("" LLU ": SSL Dialog caused an error.", xfer->uid);
 
 	/* connection closed unexpectedly */
 	delete_xfer(xfer, IO_ERROR_SSL_ERROR);
@@ -1901,7 +1939,7 @@ int xfer_read_timeout(struct slave_xfer *xfer) {
 		return 1;
 	}
 
-	SLAVE_DBG("%I64u: Read timeout with %I64u bytes read.", xfer->uid, xfer->xfered);
+	SLAVE_DBG("" LLU ": Read timeout with " LLU " bytes read.", xfer->uid, xfer->xfered);
 
 	/*if(xfer->xfered) {
 		complete_xfer(xfer);
@@ -1920,7 +1958,7 @@ int xfer_write_timeout(struct slave_xfer *xfer) {
 		return 1;
 	}
 
-	SLAVE_DBG("%I64u: Write timeout with %I64u bytes written.", xfer->uid, xfer->xfered);
+	SLAVE_DBG("" LLU ": Write timeout with " LLU " bytes written.", xfer->uid, xfer->xfered);
 	delete_xfer(xfer, IO_ERROR_CNX_WRITE_TIMEOUT);
 	
 	return 1;
@@ -1928,7 +1966,7 @@ int xfer_write_timeout(struct slave_xfer *xfer) {
 
 int xfer_connect_timeout(struct slave_xfer *xfer) {
 	
-	SLAVE_DBG("%I64u: Connect timeout.", xfer->uid);
+	SLAVE_DBG("" LLU ": Connect timeout.", xfer->uid);
 	delete_xfer(xfer, IO_ERROR_CNX_CONNECT_TIMEOUT);
 	
 	return 1;
@@ -1940,24 +1978,24 @@ int xfer_setup_socket(struct slave_xfer *xfer) {
 	/* set the correct settings on the socket here because we know if we're uploading or not */
 	if(xfer->upload) {
 		xfer->lastsize = fsd_buffer_down;
-		SLAVE_DBG("%I64u: Setting max read size to %u", xfer->uid, fsd_buffer_down);
+		SLAVE_DBG("" LLU ": Setting max read size to %u", xfer->uid, fsd_buffer_down);
 		err = socket_set_max_read(xfer->fd, (fsd_buffer_down*2)+3);
 		if(err) {
-			SLAVE_DBG("%I64u: Error was: %u", xfer->uid, err);
+			SLAVE_DBG("" LLU ": Error was: %u", xfer->uid, err);
 		}
 	} else {
 		xfer->lastsize = fsd_buffer_up;
-		SLAVE_DBG("%I64u: Setting max write size to %u", xfer->uid, fsd_buffer_up);
+		SLAVE_DBG("" LLU ": Setting max write size to %u", xfer->uid, fsd_buffer_up);
 		err = socket_set_max_write(xfer->fd, (fsd_buffer_up*2)+3);
 		if(err) {
-			SLAVE_DBG("%I64u: Error was: %u", xfer->uid, err);
+			SLAVE_DBG("" LLU ": Error was: %u", xfer->uid, err);
 		}
 	}
 	
 	xfer->speedsize = 0;
 	xfer->speedcheck = time_now();
 
-	SLAVE_DBG("%I64u: Socket setup complete.", xfer->uid);
+	SLAVE_DBG("" LLU ": Socket setup complete.", xfer->uid);
 
 	return 1;
 }
@@ -1984,7 +2022,7 @@ int xfer_connect(int fd, struct slave_xfer *xfer) {
 	if(xfer->passive && !use_pasv_proxy) {
 		
 		/* accept() and swap sockets ... */
-		SLAVE_DBG("%I64u: Accepting passive connection", xfer->uid);
+		SLAVE_DBG("" LLU ": Accepting passive connection", xfer->uid);
 		
 		xfer->fd = accept(fd, NULL, 0);
 		
@@ -1994,7 +2032,7 @@ int xfer_connect(int fd, struct slave_xfer *xfer) {
 		close_socket(fd);
 		
 		if(xfer->fd == -1) {
-			SLAVE_DBG("%I64u: Could not accept new connection.", xfer->uid);
+			SLAVE_DBG("" LLU ": Could not accept new connection.", xfer->uid);
 			delete_xfer(xfer, IO_FAILURE);
 			return 0;
 		}
@@ -2007,7 +2045,7 @@ int xfer_connect(int fd, struct slave_xfer *xfer) {
 		socket_monitor_signal_add(xfer->fd, xfer->group, "socket-close", (signal_f)xfer_close, xfer);
 		socket_monitor_signal_add(xfer->fd, xfer->group, "socket-error", (signal_f)xfer_error, xfer);
 	} else {
-		SLAVE_DBG("%I64u: Active connection established", xfer->uid);
+		SLAVE_DBG("" LLU ": Active connection established", xfer->uid);
 		
 		/* remove this very signal */
 		signal_clear_with_filter(xfer->group, "socket-connect", (void *)fd);
@@ -2054,10 +2092,10 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 	struct slave_listen_request *req = (struct slave_listen_request *)&p->data;
 	unsigned int length = (p->size - sizeof(struct packet));
 
-	SLAVE_DIALOG_DBG("%I64u: Listen query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Listen query received", p->uid);
 
 	if(length < sizeof(struct slave_listen_request)) {
-		SLAVE_DBG("%I64u: Protocol error", p->uid);
+		SLAVE_DBG("" LLU ": Protocol error", p->uid);
 		return 0; /* protocol error */
 	}
 
@@ -2067,7 +2105,7 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 		to send we will continue with this structure */
 	xfer = malloc(sizeof(struct slave_xfer));
 	if(!xfer) {
-		SLAVE_DBG("%I64u: Memory error", p->uid);
+		SLAVE_DBG("" LLU ": Memory error", p->uid);
 		return 0;
 	}
 	
@@ -2119,7 +2157,7 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 	}
 
 	if(xfer->fd == -1) {
-		SLAVE_DBG("%I64u: Could not get a listening socket", p->uid);
+		SLAVE_DBG("" LLU ": Could not get a listening socket", p->uid);
 		/* don't disconnect from the master here,
 			just answer that we can't handle this client */
 		xfer_destroy(xfer);
@@ -2132,7 +2170,7 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 
 		xfer->ip = socket_local_address(io->fd);
 		if(!xfer->ip || (xfer->ip == -1)) {
-			SLAVE_DBG("%I64u: Could not get socket ip.", p->uid);
+			SLAVE_DBG("" LLU ": Could not get socket ip.", p->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
@@ -2147,7 +2185,7 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 			return 0;
 		}
 		
-		SLAVE_DIALOG_DBG("%I64u: Listening response built", p->uid);
+		SLAVE_DIALOG_DBG("" LLU ": Listening response built", p->uid);
 	}
 	
 	/* register events on the proxy socket: "error", "close", "connect" */
@@ -2175,7 +2213,7 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 		/* enqueue the "listen" packet to the intention of the proxy */
 		xfer->query = packet_new(current_proxy_uid++, PROXY_LISTEN, &listen, sizeof(listen));
 		if(!xfer->query) {
-			SLAVE_DBG("%I64u: Could not create proxy's query", p->uid);
+			SLAVE_DBG("" LLU ": Could not create proxy's query", p->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
@@ -2199,7 +2237,7 @@ static unsigned int process_slave_listen(struct io_context *io, struct packet *p
 
 /* setup the xfer->file->io struct for the specified xfer */
 static int setup_file_io(struct slave_xfer *xfer, int *error) {
-	struct __stat64 stats;
+	struct stat stats;
 	char *filename;
 	
 	/* check if the file is already open. */
@@ -2207,7 +2245,7 @@ static int setup_file_io(struct slave_xfer *xfer, int *error) {
 		if(xfer->file->io.upload != xfer->upload) {
 			/* client requesting to download a file that is
 				currently being uploaded */
-			SLAVE_DBG("%I64u: Client request for different operation than current", xfer->uid);
+			SLAVE_DBG("" LLU ": Client request for different operation than current", xfer->uid);
 				
 			return 0;
 		}
@@ -2221,8 +2259,8 @@ static int setup_file_io(struct slave_xfer *xfer, int *error) {
 	}
 	sprintf(filename, "%s%s", xfer->file->disk->path, xfer->file->name);
 
-	if(_stat64(filename, &stats) == -1) {
-		SLAVE_DBG("%I64u: Error getting stats on %s", xfer->uid, filename);
+	if(stat(filename, &stats) == -1) {
+		SLAVE_DBG("" LLU ": Error getting stats on %s", xfer->uid, filename);
 	} else {
 		xfer->file->size = stats.st_size;
 		xfer->file->timestamp = (stats.st_mtime * 1000); /* timestamp need milliseconds resolution */
@@ -2237,7 +2275,7 @@ static int setup_file_io(struct slave_xfer *xfer, int *error) {
 	}
 	
 	if(!xfer->buffer) {
-		SLAVE_DBG("%I64u: Memory error", xfer->uid);
+		SLAVE_DBG("" LLU ": Memory error", xfer->uid);
 		free(filename);
 		return 0;
 	}
@@ -2257,7 +2295,7 @@ static int setup_file_io(struct slave_xfer *xfer, int *error) {
 		}
 		
 		if(!xfer->file->io.adio) {
-			SLAVE_DBG("%I64u: File %s could not be opened", xfer->uid, filename);
+			SLAVE_DBG("" LLU ": File %s could not be opened", xfer->uid, filename);
 			
 			if(error) *error = IO_ERROR_FILE_OPEN;
 			
@@ -2282,7 +2320,7 @@ static int setup_file_io(struct slave_xfer *xfer, int *error) {
 		xfer->op = adio_read(xfer->file->io.adio, xfer->buffer, xfer->restart, xfer->op_length, xfer->op);
 		
 		if(!xfer->op) {
-			SLAVE_DBG("%I64u: Could not create asynchronous operation!", xfer->uid);
+			SLAVE_DBG("" LLU ": Could not create asynchronous operation!", xfer->uid);
 			xfer->file->io.refcount--;
 			if(!xfer->file->io.refcount) {
 				adio_close(xfer->file->io.adio);
@@ -2316,14 +2354,18 @@ int _creat_recursive(char *filename) {
 		if(!ptr) break;
 
 		*ptr = 0;
+#ifdef WIN32
 		_mkdir(tempdir);
+#else
+		mkdir(tempdir, 666);
+#endif
 		*ptr = '\\';
 		ptr++;
 	}
 	free(tempdir);
 
-	i = _creat(filename, _S_IREAD | _S_IWRITE);
-	_close(i);
+	i = creat(filename, O_RDWR);
+	close(i);
 
 	return (i != -1) ? 0 : -1;
 }
@@ -2343,10 +2385,10 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 	//unsigned long argp;
 	char *fullname;
 
-	SLAVE_DIALOG_DBG("%I64u: Transfer query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Transfer query received", p->uid);
 
 	if(length < sizeof(struct slave_transfer_request)) {
-		SLAVE_DBG("%I64u: Protocol error", p->uid);
+		SLAVE_DBG("" LLU ": Protocol error", p->uid);
 		return 0; /* protocol error */
 	}
 
@@ -2355,13 +2397,13 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 
 	if(req->passive) {
 		if(!xfer) {
-			SLAVE_DBG("%I64u: Could not match xfer %I64u locally", p->uid, req->xfer_uid);
+			SLAVE_DBG("" LLU ": Could not match xfer " LLU " locally", p->uid, req->xfer_uid);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
 		}
 	} else {
 		if(xfer) {
-			SLAVE_DBG("%I64u: Matched with local xfer %I64u while not supposed to.", p->uid, xfer->uid);
+			SLAVE_DBG("" LLU ": Matched with local xfer " LLU " while not supposed to.", p->uid, xfer->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
@@ -2370,7 +2412,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		/* create a new slave_xfer struct and fill some information */
 		xfer = malloc(sizeof(struct slave_xfer));
 		if(!xfer) {
-			SLAVE_DBG("%I64u: Memory error", p->uid);
+			SLAVE_DBG("" LLU ": Memory error", p->uid);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
 		}
@@ -2404,14 +2446,14 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		
 		if(xfer->fd == -1) {
 			/* socket failure */
-			SLAVE_DBG("%I64u: Could not create socket", p->uid);
+			SLAVE_DBG("" LLU ": Could not create socket", p->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
 		}
 		
 		if(!collection_add(xfers_collection, xfer)) {
-			SLAVE_DBG("%I64u: Collection error", p->uid);
+			SLAVE_DBG("" LLU ": Collection error", p->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
@@ -2438,7 +2480,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 			/* add the "connect" packet for the proxy */
 			xfer->query = packet_new(current_proxy_uid++, PROXY_CONNECT, &connect, sizeof(connect));
 			if(!xfer->query) {
-				SLAVE_DBG("%I64u: Could not create packet for proxy", p->uid);
+				SLAVE_DBG("" LLU ": Could not create packet for proxy", p->uid);
 				xfer_destroy(xfer);
 				if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 				return 1;
@@ -2461,7 +2503,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 	/* keep some infos */
 	xfer->upload = req->upload; /* 'upload' is from the USER's point of view- upload for him is download for us. */
 	xfer->restart = req->upload ? 0 : req->restart; /* enforce "no resume on upload" policy */
-	SLAVE_DBG("%I64u: Restarting at %I64u", p->uid, req->restart);
+	SLAVE_DBG("" LLU ": Restarting at " LLU "", p->uid, req->restart);
 	xfer->asynch_uid = p->uid;
 	xfer->timestamp = time_now();
 	xfer->xfered = 0;
@@ -2500,7 +2542,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		/* lookup the file in all our mapped disks */
 		file = lookup_file(req->filename);
 		if(!file) {
-			SLAVE_DBG("%I64u: Could not find requested file: %s", p->uid, req->filename);
+			SLAVE_DBG("" LLU ": Could not find requested file: %s", p->uid, req->filename);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_ERROR_FILE_NOTFOUND, NULL, 0)) return 0;
 			return 1;
@@ -2508,7 +2550,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 	} else {
 		/* rotate the disks so we don't get to upload to the same disk until it's full */
 		if(!rotate_disks() || !current_disk) {
-			SLAVE_DBG("%I64u: Could not find next upload disk", p->uid);
+			SLAVE_DBG("" LLU ": Could not find next upload disk", p->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_ERROR_FILE_NODISK, NULL, 0)) return 0;
 			return 1;
@@ -2517,7 +2559,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 
 		fullname = malloc(strlen(current_disk->path) + strlen(req->filename) + 1);
 		if(!fullname) {
-			SLAVE_DBG("%I64u: Memory error", p->uid);
+			SLAVE_DBG("" LLU ": Memory error", p->uid);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
@@ -2529,7 +2571,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 		/* create the file on the current disk */
 		file = file_map_add(current_disk, req->filename);
 		if(!file) {
-			SLAVE_DBG("%I64u: Could not create %s", p->uid, req->filename);
+			SLAVE_DBG("" LLU ": Could not create %s", p->uid, req->filename);
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 			return 1;
@@ -2538,7 +2580,7 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 
 	/* link this xfer to the file */
 	if(!collection_add(file->xfers, xfer)) {
-		SLAVE_DBG("%I64u: Collection error", p->uid);
+		SLAVE_DBG("" LLU ": Collection error", p->uid);
 		xfer_destroy(xfer);
 		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 		return 0;
@@ -2547,16 +2589,16 @@ static unsigned int process_slave_transfer(struct io_context *io, struct packet 
 	/* link the file to this xfer */
 	xfer->file = file;
 	{
-		int error;
+		int error = 0;
 		if(!setup_file_io(xfer, &error)) {
-			SLAVE_DBG("%I64u: Failed to setup file i/o", p->uid);
+			SLAVE_DBG("" LLU ": Failed to setup file i/o", p->uid);
 			xfer->file = NULL;
 			xfer_destroy(xfer);
 			if(!enqueue_packet(p->uid, error, NULL, 0)) return 0;
 			return 1;
 		}
 	}
-	SLAVE_DIALOG_DBG("%I64u: Transfer setup completed", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Transfer setup completed", p->uid);
 
 	return 1;
 }
@@ -2570,11 +2612,11 @@ static unsigned int process_slave_delete(struct io_context *io, struct packet *p
 	/* correct the filename */
 	for(i=0;i<strlen(filename);i++) if(filename[i] == '/') filename[i] = '\\';
 
-	SLAVE_DIALOG_DBG("%I64u: Delete query received for %s", p->uid, filename);
+	SLAVE_DIALOG_DBG("" LLU ": Delete query received for %s", p->uid, filename);
 
 	file = lookup_file(filename);
 	if(!file) {
-		SLAVE_DBG("%I64u: Could not find file %s", p->uid, filename);
+		SLAVE_DBG("" LLU ": Could not find file %s", p->uid, filename);
 		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 		return 1;
 	}
@@ -2591,17 +2633,17 @@ static unsigned int process_slave_sslcert_pkey(struct io_context *io, struct pac
 	unsigned char *buffer, *tmp;
 	int len;
 	
-	SLAVE_DIALOG_DBG("%I64u: SSL Certificate pkey query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": SSL Certificate pkey query received", p->uid);
 	
 	/* Something to setup buf and len */
-	buffer = (char *)&p->data;
+	buffer = (unsigned char *)&p->data;
 	len = packet_data_length(p);
 	
 	tmp = buffer;
 	certificate_key = d2i_PrivateKey(EVP_PKEY_RSA, NULL, (const unsigned char **)&tmp, len);
 	
 	if(!certificate_key) {
-		SLAVE_DIALOG_DBG("%I64u: SSL Certificate pkey could not be imported!", p->uid);
+		SLAVE_DIALOG_DBG("" LLU ": SSL Certificate pkey could not be imported!", p->uid);
 		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 		
 		return 1;
@@ -2617,17 +2659,17 @@ static unsigned int process_slave_sslcert_x509(struct io_context *io, struct pac
 	unsigned char *buffer, *tmp;
 	int len;
 	
-	SLAVE_DIALOG_DBG("%I64u: SSL Certificate x509 query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": SSL Certificate x509 query received", p->uid);
 	
 	/* Something to setup buf and len */
-	buffer = (char *)&p->data;
+	buffer = (unsigned char *)&p->data;
 	len = packet_data_length(p);
 	
 	tmp = buffer;
 	certificate_file = d2i_X509(NULL, (const unsigned char **)&tmp, len);
 	
 	if(!certificate_file) {
-		SLAVE_DIALOG_DBG("%I64u: SSL Certificate x509 could not be imported!", p->uid);
+		SLAVE_DIALOG_DBG("" LLU ": SSL Certificate x509 could not be imported!", p->uid);
 		if(!enqueue_packet(p->uid, IO_FAILURE, NULL, 0)) return 0;
 		
 		return 1;
@@ -2651,7 +2693,7 @@ static unsigned int process_slave_deletelog(struct io_context *io, struct packet
 	unsigned int current, length, line;
 	char *ptr, *next;
 
-	SLAVE_DIALOG_DBG("%I64u: Deletelog query received", p->uid);
+	SLAVE_DIALOG_DBG("" LLU ": Deletelog query received", p->uid);
 
 	length = (p->size - sizeof(struct packet));
 
@@ -2678,7 +2720,7 @@ static unsigned int process_slave_deletelog(struct io_context *io, struct packet
 
 		file = lookup_file(ptr);
 		if(!file) {
-			SLAVE_DBG("%I64u: Could not find file %s", p->uid, ptr);
+			SLAVE_DBG("" LLU ": Could not find file %s", p->uid, ptr);
 		}
 		else {
 			file_unmap(file);
@@ -2703,7 +2745,7 @@ static unsigned int handle_inputs(struct io_context *io) {
 	struct packet *p;
 	unsigned int ret;
 
-	if(!io_read_packet(io, &p, INFINITE)) {
+	if(!io_read_packet(io, &p, -1)) {
 		SLAVE_DBG("Error while reading data packet");
 		return 0;
 	}
@@ -2712,7 +2754,7 @@ static unsigned int handle_inputs(struct io_context *io) {
 		return 1;
 	}
 
-	//SLAVE_DBG("Parsing packet %I64u", p->uid);
+	//SLAVE_DBG("Parsing packet " LLU "", p->uid);
 
 	switch(p->type) {
 	case IO_PUBLIC_KEY:	/* reply with FAILURE or the same type */
@@ -2793,7 +2835,7 @@ static unsigned int handle_outputs(struct io_context *io) {
 
 static unsigned int get_entry_matcher(struct collection *c, struct fsd_sfv_entry *entry, char *filename) {
 
-	return !stricmp(entry->filename, filename);
+	return !strcasecmp(entry->filename, filename);
 }
 
 /* this function does not check for duplicates, it returns the
@@ -2954,36 +2996,35 @@ unsigned int sfv_parse(struct file_map *file) {
 
 /* store all files found in 'path' and add it to the file list of 'disk' */
 static unsigned int map_files_from_path(struct disk_map *disk, const char *path) {
-	WIN32_FIND_DATA fd;
 	char *sub_path;
-	HANDLE iter;
+	struct dir_ctx *dir;
 	unsigned int directory;
 	char *full_path;
 	struct file_map *file;
 
-	full_path = malloc(strlen(disk->path)+strlen(path)+2);
+	full_path = malloc(strlen(disk->path)+strlen(path)+1);
 	if(!full_path) {
 		SLAVE_DBG("Memory error");
 		return 0;
 	}
-	sprintf(full_path, "%s%s*", disk->path, &path[1]);
+	sprintf(full_path, "%s%s", disk->path, &path[1]);
 
-	iter = FindFirstFile(full_path, &fd);
-	if(iter == INVALID_HANDLE_VALUE) {
-		SLAVE_DBG("Path could not be walked: %s", full_path);
+	dir = dir_open(full_path, "*");
+	if(!dir) {
+		SLAVE_DBG("Path could not be opened: %s", full_path);
 		free(full_path);
 		return 0;
 	}
 	free(full_path);
 
 	do {
-		if(!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+		if(!strcmp(dir_name(dir), ".") || !strcmp(dir_name(dir), "..")) continue;
 
-		directory = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+		directory = (dir_attrib(dir) & DIR_SUBDIR) ? 1 : 0;
 
-		sub_path = malloc(strlen(path)+strlen(fd.cFileName)+2);
+		sub_path = malloc(strlen(path)+strlen(dir_name(dir))+2);
 		if(!sub_path) continue;
-		sprintf(sub_path, "%s%s%c", path, fd.cFileName, directory ? '\\' : 0);
+		sprintf(sub_path, "%s%s%c", path, dir_name(dir), directory ? '\\' : 0);
 
 		/* if the file is a directory, call this function recursively */
 		if(directory) {
@@ -3002,16 +3043,15 @@ static unsigned int map_files_from_path(struct disk_map *disk, const char *path)
 
 			/* if this file is a sfv, read it and add its contents to the file's structure. */
 			namelen = strlen(file->name);
-			if((namelen > 4) && !stricmp(&file->name[namelen-4], ".sfv")) {
+			if((namelen > 4) && !strcasecmp(&file->name[namelen-4], ".sfv")) {
 				sfv_parse(file);
 			}
 		}
 
 		free(sub_path);
 
-	} while(FindNextFile(iter, &fd));
-
-	FindClose(iter);
+	} while(dir_next(dir));
+	dir_close(dir);
 
 	return 1;
 }
@@ -3064,11 +3104,15 @@ static void disk_map_obj_destroy(struct disk_map *disk) {
 /* add a disk map to the mapped disks collection */
 static struct disk_map *disk_map_add(const char *path, unsigned int threshold) {
 	struct disk_map *disk;
+#ifdef WIN32
 	struct _diskfree_t driveinfo;
 	unsigned int drive = 0;
+#else
+  struct statvfs driveinfo;  
+#endif
 	char *fullpath;
 
-	fullpath = _fullpath(NULL, path, 0);
+	fullpath = dir_fullpath(path);
 	if(fullpath) {
 		disk = malloc(sizeof(struct disk_map) + strlen(fullpath) + 1);
 		if(!disk) {
@@ -3089,6 +3133,7 @@ static struct disk_map *disk_map_add(const char *path, unsigned int threshold) {
 	obj_init(&disk->o, disk, (obj_f)disk_map_obj_destroy);
 	collectible_init(disk);
 
+#ifdef WIN32
 	if((disk->path[0] >= 'a') && (disk->path[0] <= 'z')) drive = disk->path[0] - 'a'+1;
 	if((disk->path[0] >= 'A') && (disk->path[0] <= 'Z')) drive = disk->path[0] - 'A'+1;
 	if(!drive) {
@@ -3110,7 +3155,20 @@ static struct disk_map *disk_map_add(const char *path, unsigned int threshold) {
 						(unsigned long long int)driveinfo.total_clusters *
 						(unsigned long long int)driveinfo.sectors_per_cluster *
 						(unsigned long long int)driveinfo.bytes_per_sector);
-
+#else
+	if(statvfs(disk->path, &driveinfo)) {
+		SLAVE_DBG("Cannot get disk infos for drive: %s", disk->path);
+		return NULL;
+	}
+	
+	disk->diskfree = (unsigned long long int)(
+	          (unsigned long long int)driveinfo.f_bfree *
+	          (unsigned long long int)driveinfo.f_bsize);
+	disk->disktotal = (unsigned long long int)(
+	          (unsigned long long int)driveinfo.f_blocks *
+	          (unsigned long long int)driveinfo.f_frsize);
+#endif
+  
 	disk->current_files = 0;
 	disk->threshold = threshold;
 
@@ -3403,6 +3461,7 @@ int main_socket_close(int fd, struct slave_main_ctx *main_ctx) {
 	return 1;
 }
 
+#ifdef WIN32
 void set_current_path() {
 	char full_path[MAX_PATH];
 	char *ptr;
@@ -3417,23 +3476,30 @@ void set_current_path() {
 
 	return;
 }
+#endif
 
+#ifdef WIN32
 void check_update_process(int argc, char *argv[]) {
-	char full_path[MAX_PATH];
+	//char full_path[MAX_PATH];
+	char *fullpath;
 	unsigned int i;
 	char *data;
 	unsigned int size;
 	FILE *f;
 	char *params;
 	
-	GetModuleFileName(NULL, full_path, sizeof(full_path));
+#ifdef WIN32
+	//GetModuleFileName(NULL, full_path, sizeof(full_path));
+#endif
+
+  fullpath = dir_fullpath(".");
+  
+	SLAVE_DBG("Current slave's revision is " LLU "", SLAVE_REVISION_NUMBER);
+	SLAVE_DBG("Executed from \"%s\"", fullpath);
 	
-	SLAVE_DBG("Current slave's revision is %I64u", SLAVE_REVISION_NUMBER);
-	SLAVE_DBG("Executed from \"%s\"", full_path);
-	
-	for(i=0;i<argc-1;i++) if(!stricmp(argv[i], "delete")) {
+	for(i=0;i<argc-1;i++) if(!strcasecmp(argv[i], "delete")) {
 		
-		if(!stricmp(full_path, argv[i+1])) {
+		if(!strcasecmp(fullpath, argv[i+1])) {
 			SLAVE_DBG("File scheduled for deletion is this executable: \"%s\"", argv[i+1]);
 			break;
 		}
@@ -3441,7 +3507,7 @@ void check_update_process(int argc, char *argv[]) {
 		SLAVE_DBG("Update process is deleting the update file \"%s\"", argv[i+1]);
 		
 		/* Wait 30 seconds so the other executable can exit properly */
-		Sleep(30000);
+		sleep(30000);
 		
 		/* Delete the other executable from disk */
 		remove(argv[i+1]);
@@ -3449,9 +3515,9 @@ void check_update_process(int argc, char *argv[]) {
 		SLAVE_DBG("The update process is not COMPLETE.");
 	}
 	
-	for(i=0;i<argc-1;i++) if(!stricmp(argv[i], "update")) {
+	for(i=0;i<argc-1;i++) if(!strcasecmp(argv[i], "update")) {
 		
-		if(!stricmp(full_path, argv[i+1])) {
+		if(!strcasecmp(fullpath, argv[i+1])) {
 			SLAVE_DBG("Executed from update location: \"%s\"", argv[i+1]);
 			break;
 		}
@@ -3459,12 +3525,12 @@ void check_update_process(int argc, char *argv[]) {
 		SLAVE_DBG("Update process is started, updating to \"%s\"", argv[i+1]);
 		
 		/* Wait 30 seconds so the other executable can exit properly */
-		Sleep(30000);
+		sleep(30000);
 		
 		/* Delete the other executable from disk */
 		remove(argv[i+1]);
 		
-		data = config_load_file(full_path, &size);
+		data = config_load_file(fullpath, &size);
 		if(!data) {
 			SLAVE_DBG("Cannot read the target file: cannot copy it to its correct name.");
 			break;
@@ -3485,7 +3551,7 @@ void check_update_process(int argc, char *argv[]) {
 		}
 		fclose(f);
 		
-		params = bprintf("delete %s", full_path);
+		params = bprintf("delete %s", fullpath);
 		if(ShellExecute(NULL, "open", argv[i+1], params ? params : "", "", SW_HIDE) <= (HINSTANCE)32) {
 			SLAVE_DBG("Could not ShellExecute the target file");
 			free(params);
@@ -3496,11 +3562,16 @@ void check_update_process(int argc, char *argv[]) {
 		SLAVE_DBG("Taget file is created and executed. Filename: \"%s\", params: \"%s\"", argv[i+1], params);
 		free(params);
 		
+		free(fullpath);
+		
 		exit(0);
 	}
 	
+	free(fullpath);
+	
 	return;
 }
+#endif
 
 #ifdef SLAVE_WIN32_SERVICE
 int win32_service_main() {
@@ -3509,7 +3580,9 @@ int main(int argc, char* argv[]) {
 #endif
 	unsigned long long int attempts = 0;
 
+#ifdef WIN32
 	set_current_path();
+#endif
 
 #ifdef SLAVE_SILENT_CRASH
 	SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
@@ -3517,9 +3590,11 @@ int main(int argc, char* argv[]) {
 	
 	// just ensure that the file doesn't get too big
 	remove("debug.log");
-	
+
+#ifdef WIN32
 #ifndef SLAVE_WIN32_SERVICE
 	check_update_process(argc, argv);
+#endif
 #endif
 
 	crypto_init();
@@ -3551,9 +3626,9 @@ int main(int argc, char* argv[]) {
 		attempts++;
 		
 		if(!master_connections) {
-			SLAVE_DBG("Connection attempt #%I64u on (infinite)", attempts);
+			SLAVE_DBG("Connection attempt #" LLU " on (infinite)", attempts);
 		} else {
-			SLAVE_DBG("Connection attempt #%I64u on (%u)", attempts, master_connections);
+			SLAVE_DBG("Connection attempt #" LLU " on (%u)", attempts, master_connections);
 		}
 		
 		/* create the socket */
@@ -3568,7 +3643,7 @@ int main(int argc, char* argv[]) {
 		}
 		if(main_ctx.io.fd == -1) {
 			SLAVE_DBG("Could not create main socket");
-			Sleep(10000);
+			sleep(10000);
 			continue;
 		}
 	
@@ -3584,8 +3659,8 @@ int main(int argc, char* argv[]) {
 		do {
 			socket_poll();
 			xfer_adio_poll();
-			collection_cleanup_iterators();
-			Sleep(SLAVE_SLEEP_TIME);
+//			collection_cleanup_iterators();
+			sleep(SLAVE_SLEEP_TIME);
 		} while(main_ctx.connected && !main_ctx.slave_is_dead);
 		
 		SLAVE_DBG("Connection lost from master !");
@@ -3617,7 +3692,7 @@ int main(int argc, char* argv[]) {
 		}
 		collection_empty(enqueued_packets);
 		
-		Sleep(10000);
+		sleep(10000);
 	}
 
 	SLAVE_DBG("Main thread is exiting");
